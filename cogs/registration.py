@@ -106,6 +106,7 @@ class ApplicationModal(discord.ui.Modal, title="Заявка в Легион"):
     )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
         user = interaction.user
         channel = interaction.client.get_channel(config.FORMS_CHANNEL_ID)
         if channel is None:
@@ -113,7 +114,7 @@ class ApplicationModal(discord.ui.Modal, title="Заявка в Легион"):
                 channel = await interaction.client.fetch_channel(config.FORMS_CHANNEL_ID)
             except discord.HTTPException:
                 log.error("Канал анкет %s не найден", config.FORMS_CHANNEL_ID)
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "Не удалось отправить анкету: канал анкет не найден. Сообщите офицерам.",
                     ephemeral=True,
                 )
@@ -138,7 +139,7 @@ class ApplicationModal(discord.ui.Modal, title="Заявка в Легион"):
             message = await channel.send(embed=embed, view=ReviewView())
         except discord.Forbidden:
             log.error("Нет прав писать в канал анкет")
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Не удалось отправить анкету: у бота нет прав в канале анкет. Сообщите офицерам.",
                 ephemeral=True,
             )
@@ -154,7 +155,7 @@ class ApplicationModal(discord.ui.Modal, title="Заявка в Легион"):
         save_data(data)
         log.info("Новая заявка от %s (%s)", user, user.id)
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "✅ Анкета отправлена! Офицеры Легиона рассмотрят её и ответят вам в личные сообщения. "
             "Пожалуйста, не закрывайте личку от участников сервера.",
             ephemeral=True,
@@ -202,10 +203,11 @@ class RejectModal(discord.ui.Modal, title="Отклонение заявки"):
         self.applicant_id = applicant_id
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
         data = load_data()
         app = data.get(str(self.applicant_id))
         if not app or app.get("status") != "pending":
-            await interaction.response.send_message("Эта заявка уже рассмотрена.", ephemeral=True)
+            await interaction.followup.send("Эта заявка уже рассмотрена.", ephemeral=True)
             return
 
         reason = self.reason.value.strip() or "не указана"
@@ -232,7 +234,7 @@ class RejectModal(discord.ui.Modal, title="Отклонение заявки"):
             pass
 
         note = "" if delivered else " Заявитель не получил уведомление: личка закрыта."
-        await interaction.response.send_message(f"Заявка отклонена.{note}", ephemeral=True)
+        await interaction.followup.send(f"Заявка отклонена.{note}", ephemeral=True)
         log.info("Заявка %s отклонена (%s)", self.applicant_id, interaction.user)
 
 
@@ -263,6 +265,7 @@ class ReviewView(discord.ui.View):
         applicant_id = await self._get_pending(interaction)
         if applicant_id is None:
             return
+        await interaction.response.defer()
 
         guild = interaction.guild
         data = load_data()
@@ -274,12 +277,12 @@ class ReviewView(discord.ui.View):
             app["status"] = "left"
             save_data(data)
             embed = set_status(interaction.message.embeds[0], "🚪 Заявитель покинул сервер", COLOR_REJECTED)
-            await interaction.response.edit_message(embed=embed, view=None)
+            await interaction.edit_original_response(embed=embed, view=None)
             return
 
         member_role = guild.get_role(config.MEMBER_ROLE_ID)
         if member_role is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Роль легионера не найдена. Проверьте MEMBER_ROLE_ID в .env.", ephemeral=True
             )
             return
@@ -291,7 +294,7 @@ class ReviewView(discord.ui.View):
                 if newcomer and newcomer in member.roles:
                     await member.remove_roles(newcomer, reason="Принят в Легион")
         except discord.Forbidden:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "У бота не хватает прав выдать роль. В настройках сервера роль бота должна стоять "
                 "выше роли легионера, и у бота должно быть право «Управлять ролями».",
                 ephemeral=True,
@@ -311,7 +314,7 @@ class ReviewView(discord.ui.View):
             status += "\n(личка заявителя закрыта, уведомление не доставлено)"
 
         embed = set_status(interaction.message.embeds[0], status, COLOR_APPROVED)
-        await interaction.response.edit_message(embed=embed, view=None)
+        await interaction.edit_original_response(embed=embed, view=None)
         log.info("Заявка %s принята (%s)", applicant_id, interaction.user)
 
     @discord.ui.button(label="Отклонить", emoji="❌", style=discord.ButtonStyle.danger, custom_id="prok:reject")
@@ -332,6 +335,7 @@ class Registration(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     @app_commands.guild_only()
     async def post_panel(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
         channel = interaction.guild.get_channel(config.REGISTRATUM_CHANNEL_ID) or interaction.channel
         embed = discord.Embed(
             title="🏛️ Регистратум Легиона",
@@ -346,13 +350,13 @@ class Registration(commands.Cog):
         try:
             await channel.send(embed=embed, view=RegistrationView())
         except discord.Forbidden:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"У бота нет прав писать в {channel.mention}. Дайте роли бота в этом канале права "
                 "«Просматривать канал», «Отправлять сообщения» и «Встраивать ссылки».",
                 ephemeral=True,
             )
             return
-        await interaction.response.send_message(f"Панель опубликована в {channel.mention}.", ephemeral=True)
+        await interaction.followup.send(f"Панель опубликована в {channel.mention}.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
