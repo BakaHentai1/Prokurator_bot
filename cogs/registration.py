@@ -343,7 +343,15 @@ class Registration(commands.Cog):
             ),
             color=discord.Color.dark_red(),
         )
-        await channel.send(embed=embed, view=RegistrationView())
+        try:
+            await channel.send(embed=embed, view=RegistrationView())
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                f"У бота нет прав писать в {channel.mention}. Дайте роли бота в этом канале права "
+                "«Просматривать канал», «Отправлять сообщения» и «Встраивать ссылки».",
+                ephemeral=True,
+            )
+            return
         await interaction.response.send_message(f"Панель опубликована в {channel.mention}.", ephemeral=True)
 
 
