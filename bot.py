@@ -13,7 +13,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("prokurator")
 
-EXTENSIONS = ["cogs.registration", "cogs.warehouses", "cogs.backup"]
+EXTENSIONS = ["cogs.registration", "cogs.warehouses", "cogs.consulate", "cogs.backup"]
 
 
 class Prokurator(commands.Bot):
