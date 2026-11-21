@@ -18,7 +18,9 @@ EXTENSIONS = ["cogs.registration"]
 
 class Prokurator(commands.Bot):
     def __init__(self) -> None:
-        super().__init__(command_prefix="!", intents=discord.Intents.default())
+        intents = discord.Intents.default()
+        intents.members = True  # нужно, чтобы бот видел, кто зашёл на сервер
+        super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self) -> None:
         for ext in EXTENSIONS:

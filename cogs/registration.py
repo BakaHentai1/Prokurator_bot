@@ -1,6 +1,8 @@
 """Регистратум: анкета новичка и рассмотрение заявок офицерами.
 
 Как это работает:
+0. Когда человек заходит на сервер, бот приветствует его в «Регистратуме»
+   и сразу прикладывает кнопку «Подать заявку».
 1. Администратор пишет /регистратум — бот публикует панель с кнопкой «Подать заявку».
 2. Новичок жмёт кнопку и заполняет анкету.
 3. Анкета уходит в закрытый канал анкет с кнопками «Принять» / «Отклонить».
@@ -330,6 +332,36 @@ class ReviewView(discord.ui.View):
 class Registration(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member) -> None:
+        """Приветствует нового участника в Регистратуме и предлагает подать заявку."""
+        if member.bot or member.guild.id != config.GUILD_ID:
+            return
+        channel = member.guild.get_channel(config.REGISTRATUM_CHANNEL_ID)
+        if channel is None:
+            log.error("Канал Регистратума %s не найден", config.REGISTRATUM_CHANNEL_ID)
+            return
+        embed = discord.Embed(
+            title="🏛️ Ave, путник!",
+            description=(
+                f"Добро пожаловать к воротам Легиона, {member.mention}.\n\n"
+                "Чтобы вступить в наши ряды, нажмите кнопку ниже и заполните короткую анкету. "
+                "Офицеры рассмотрят её и ответят вам в личные сообщения."
+            ),
+            color=discord.Color.dark_red(),
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        try:
+            await channel.send(
+                content=member.mention,
+                embed=embed,
+                view=RegistrationView(),
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
+            log.info("Поприветствовал новичка %s (%s)", member, member.id)
+        except discord.HTTPException as e:
+            log.error("Не удалось поприветствовать %s: %s", member, e)
 
     @app_commands.command(name="регистратум", description="Опубликовать панель подачи заявок в Регистратуме")
     @app_commands.default_permissions(administrator=True)
