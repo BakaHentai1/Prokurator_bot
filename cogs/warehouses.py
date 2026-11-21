@@ -1,13 +1,13 @@
 """Секретариум: учёт складов Легиона.
 
 Как это работает:
-1. /склад добавить — форма (название, регион, координаты, назначение, комментарий),
+1. /склад добавить — форма (название, гекс, регион, назначение, комментарий),
    затем выбор владельца и категории, затем пароль.
 2. Бот публикует карточку склада в «Секретариуме» (офицерские — в отдельный канал,
    если он задан). Пароль в карточке никогда не показывается.
 3. Кнопки на карточке: пароль (в личку), изменить, место, владелец, смена пароля,
    статус/категория, журнал. Права проверяются перед каждым действием.
-4. /склад найти — поиск по названию/номеру, региону, владельцу, назначению, статусу.
+4. /склад найти — поиск по названию/номеру, гексу, региону, владельцу, назначению, статусу.
 5. Все действия пишутся в журнал (база data/legion.db, таблица audit_log).
 """
 import logging
@@ -277,8 +277,8 @@ def changes(old: dict, new: dict, labels: dict[str, str]) -> str:
 def card_embed(wh: dict) -> discord.Embed:
     status, color = STATUSES.get(wh["status"], STATUSES["active"])
     e = discord.Embed(title=f"Склад №{wh['id']} · {wh['name']}", color=color)
-    e.add_field(name="Регион", value=wh["region"], inline=True)
-    e.add_field(name="Координаты", value=wh["coords"] or "—", inline=True)
+    e.add_field(name="Гекс", value=wh["region"], inline=True)
+    e.add_field(name="Регион", value=wh["coords"] or "—", inline=True)
     e.add_field(name="Владелец", value=f"<@{wh['owner_id']}>", inline=True)
     e.add_field(name="Назначение", value=wh["purpose"] or "—", inline=True)
     e.add_field(name="Категория", value=CATEGORIES.get(wh["category"], wh["category"]), inline=True)
@@ -404,9 +404,9 @@ def history_embed(wh: dict) -> discord.Embed:
 
 class WarehouseForm(discord.ui.Modal, title="Новый склад · шаг 1 из 3"):
     name = discord.ui.TextInput(label="Название или номер склада", max_length=80)
-    region = discord.ui.TextInput(label="Регион", placeholder="Например: Deadlands", max_length=60)
+    region = discord.ui.TextInput(label="Гекс", placeholder="Например: Deadlands", max_length=60)
     coords = discord.ui.TextInput(
-        label="Координаты на карте Foxhole", placeholder="Например: G7 k3", max_length=60, required=False
+        label="Регион", placeholder="Например: Abandoned Ward", max_length=60, required=False
     )
     purpose = discord.ui.TextInput(
         label="Назначение", placeholder="Боеприпасы, техника, логистика, резерв…", max_length=100
@@ -499,7 +499,7 @@ class PasswordModal(discord.ui.Modal):
 
         wid = db.create(draft, created_by=user.id)
         wh = db.get(wid)
-        await audit(interaction.client, user, wh, "create", f"{CATEGORIES[wh['category']]}, регион {wh['region']}")
+        await audit(interaction.client, user, wh, "create", f"{CATEGORIES[wh['category']]}, {wh['region']}" + (f" / {wh['coords']}" if wh["coords"] else ""))
         error = await publish_card(interaction.client, wid)
         wh = db.get(wid)
         text = f"✅ Склад №{wid} «{wh['name']}» зарегистрирован."
@@ -562,8 +562,8 @@ class EditModal(discord.ui.Modal, title="Изменить склад"):
 
 
 class MoveModal(discord.ui.Modal, title="Местоположение склада"):
-    region = discord.ui.TextInput(label="Регион", max_length=60)
-    coords = discord.ui.TextInput(label="Координаты на карте Foxhole", max_length=60, required=False)
+    region = discord.ui.TextInput(label="Гекс", placeholder="Например: Deadlands", max_length=60)
+    coords = discord.ui.TextInput(label="Регион", placeholder="Например: Abandoned Ward", max_length=60, required=False)
 
     def __init__(self, wh: dict) -> None:
         super().__init__()
@@ -578,7 +578,7 @@ class MoveModal(discord.ui.Modal, title="Местоположение склад
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         new = {"region": self.region.value.strip(), "coords": self.coords.value.strip()}
-        diff = changes(wh, new, {"region": "Регион", "coords": "Координаты"})
+        diff = changes(wh, new, {"region": "Гекс", "coords": "Регион"})
         if not diff:
             await interaction.followup.send("Ничего не изменилось.", ephemeral=True)
             return
@@ -709,7 +709,7 @@ async def on_card_button(interaction: discord.Interaction, action: str, wid: int
         await interaction.response.defer(ephemeral=True, thinking=True)
         text = (
             f"🔑 **Склад №{wh['id']} · {wh['name']}**\n"
-            f"Регион: {wh['region']}" + (f", координаты: {wh['coords']}" if wh["coords"] else "") + "\n"
+            f"Гекс: {wh['region']}" + (f", регион: {wh['coords']}" if wh["coords"] else "") + "\n"
             f"Пароль: ||{wh['password']}||\n\n"
             "Не пересылайте пароль в общие каналы."
         )
@@ -771,10 +771,18 @@ async def on_card_button(interaction: discord.Interaction, action: str, wid: int
 
 # ---------- команды ----------
 
-async def region_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+def _autocomplete(interaction: discord.Interaction, current: str, column: str) -> list[app_commands.Choice[str]]:
     cur = current.casefold()
-    regions = sorted({w["region"] for w in db.all() if can_see(interaction.user, w)}, key=str.casefold)
-    return [app_commands.Choice(name=r, value=r) for r in regions if cur in r.casefold()][:25]
+    values = sorted({w[column] for w in db.all() if w[column] and can_see(interaction.user, w)}, key=str.casefold)
+    return [app_commands.Choice(name=v, value=v) for v in values if cur in v.casefold()][:25]
+
+
+async def hex_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    return _autocomplete(interaction, current, "region")
+
+
+async def subregion_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    return _autocomplete(interaction, current, "coords")
 
 
 ACTION_CHOICES = [app_commands.Choice(name=label, value=key) for key, label in ACTIONS.items()]
@@ -797,17 +805,19 @@ class Warehouses(commands.Cog):
     @sklad.command(name="найти", description="Поиск складов")
     @app_commands.describe(
         запрос="Название или номер склада",
-        регион="Регион",
+        гекс="Гекс, например Deadlands",
+        регион="Регион внутри гекса, например Abandoned Ward",
         владелец="Владелец склада",
         назначение="Назначение склада",
         статус="Статус (по умолчанию — все, кроме закрытых)",
     )
     @app_commands.choices(статус=STATUS_CHOICES)
-    @app_commands.autocomplete(регион=region_autocomplete)
+    @app_commands.autocomplete(гекс=hex_autocomplete, регион=subregion_autocomplete)
     async def find(
         self,
         interaction: discord.Interaction,
         запрос: Optional[str] = None,
+        гекс: Optional[str] = None,
         регион: Optional[str] = None,
         владелец: Optional[discord.Member] = None,
         назначение: Optional[str] = None,
@@ -830,7 +840,9 @@ class Warehouses(commands.Cog):
                 q = запрос.strip().lstrip("№#").casefold()
                 if q != str(w["id"]) and q not in w["name"].casefold():
                     return False
-            if регион and регион.casefold() not in w["region"].casefold():
+            if гекс and гекс.casefold() not in w["region"].casefold():
+                return False
+            if регион and регион.casefold() not in w["coords"].casefold():
                 return False
             if владелец and w["owner_id"] != владелец.id:
                 return False
