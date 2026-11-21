@@ -500,6 +500,14 @@ class ConsulatePanel(discord.ui.View):
             return
         await interaction.response.send_modal(PollForm())
 
+    @discord.ui.button(label="Новый эдикт", emoji="📜", style=discord.ButtonStyle.secondary, custom_id="cons:edict")
+    async def new_edict(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        from cogs.edicts import EdictForm  # модуль эдиктов загружается после этого
+        if not can_create(interaction.user):
+            await interaction.response.send_message("⛔ Эдикты издают Принцепс, Консулы и Сенат.", ephemeral=True)
+            return
+        await interaction.response.send_modal(EdictForm())
+
     @discord.ui.button(label="Новая операция", emoji="⚔️", style=discord.ButtonStyle.danger, custom_id="cons:op")
     async def new_op(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         from cogs.operations import OperationForm, can_create_op  # модуль операций загружается после этого
@@ -535,6 +543,8 @@ def panel_embed() -> discord.Embed:
         title="🏛️ КОНСУЛАТ ЛЕГИОНА",
         description=(
             "Панель командования.\n\n"
+            "📜 **Новый эдикт** — официальное объявление с номером и подписью, можно по расписанию "
+            "и с кнопкой «Принято».\n"
             "🗳️ **Новое голосование** — вопрос, варианты, срок; тайное или открытое. "
             "Итоги бот опубликует сам.\n"
             "⚔️ **Новая операция** — время, место, задача; кнопки «Приду / Опоздаю / Не приду», "
