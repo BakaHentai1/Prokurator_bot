@@ -45,6 +45,19 @@ ALLY_ROLE_ID = _int("ALLY_ROLE_ID", required=False)  # «Союзник»
 WARDEN_ROLE_ID = _int("WARDEN_ROLE_ID", required=False)  # «Варден» (гости другой фракции)
 REVIEWER_ROLE_IDS = _ids("REVIEWER_ROLE_IDS")
 
+# Секретариум (учёт складов). Если канал не задан, модуль складов выключен.
+SECRETARIUM_CHANNEL_ID = _int("SECRETARIUM_CHANNEL_ID", required=False)
+OFFICER_WAREHOUSE_CHANNEL_ID = _int("OFFICER_WAREHOUSE_CHANNEL_ID", required=False)
+AUDIT_CHANNEL_ID = _int("AUDIT_CHANNEL_ID", required=False)
+
+# Должности (для прав на склады по умолчанию)
+PRINCEPS_ROLE_ID = _int("PRINCEPS_ROLE_ID", required=False)
+SENATE_ROLE_ID = _int("SENATE_ROLE_ID", required=False)
+CONSUL_ROLE_ID = _int("CONSUL_ROLE_ID", required=False)
+LEGATE_ROLE_ID = _int("LEGATE_ROLE_ID", required=False)
+CENTURION_ROLE_ID = _int("CENTURION_ROLE_ID", required=False)
+FABRUM_ROLE_ID = _int("FABRUM_ROLE_ID", required=False)
+
 DATA_DIR = BASE_DIR / "data"
 
 

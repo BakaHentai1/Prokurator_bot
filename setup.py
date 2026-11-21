@@ -16,6 +16,15 @@ QUESTIONS = [
     ("ALLY_ROLE_ID", "ID роли союзника", False, True),
     ("WARDEN_ROLE_ID", "ID роли варденов", False, True),
     ("REVIEWER_ROLE_IDS", "ID ролей офицеров через запятую (Сенат, Консулы, Легаты, Центурионы)", True, None),
+    ("SECRETARIUM_CHANNEL_ID", "ID канала «Секретариум» (карточки складов)", False, True),
+    ("OFFICER_WAREHOUSE_CHANNEL_ID", "ID закрытого канала офицерских складов (Enter — пропустить)", False, True),
+    ("AUDIT_CHANNEL_ID", "ID закрытого канала журнала складов (Enter — пропустить)", False, True),
+    ("PRINCEPS_ROLE_ID", "ID роли Принцепса", False, True),
+    ("SENATE_ROLE_ID", "ID роли Сената (Enter — пропустить)", False, True),
+    ("CONSUL_ROLE_ID", "ID роли Консулов", False, True),
+    ("LEGATE_ROLE_ID", "ID роли Легатов", False, True),
+    ("CENTURION_ROLE_ID", "ID роли Центурионов", False, True),
+    ("FABRUM_ROLE_ID", "ID роли Фабрум", False, True),
 ]
 
 
