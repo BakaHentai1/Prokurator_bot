@@ -50,6 +50,9 @@ SECRETARIUM_CHANNEL_ID = _int("SECRETARIUM_CHANNEL_ID", required=False)
 OFFICER_WAREHOUSE_CHANNEL_ID = _int("OFFICER_WAREHOUSE_CHANNEL_ID", required=False)
 AUDIT_CHANNEL_ID = _int("AUDIT_CHANNEL_ID", required=False)
 
+# «Архивариум» — журнал Консулата (голосования, итоги)
+ARCHIVE_CHANNEL_ID = _int("ARCHIVE_CHANNEL_ID", required=False)
+
 # Должности (для прав на склады по умолчанию)
 PRINCEPS_ROLE_ID = _int("PRINCEPS_ROLE_ID", required=False)
 SENATE_ROLE_ID = _int("SENATE_ROLE_ID", required=False)

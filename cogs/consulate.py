@@ -7,6 +7,8 @@
 - До конца видно только число проголосовавших, без промежуточных итогов.
 - По окончании бот сам публикует итоги. В открытом голосовании — кто за что голосовал.
 - Данные хранятся в data/consulate.db (отдельный файл, другие данные не затрагиваются).
+- Журнал Консулата (создание, досрочное завершение, итоги) уходит в «Архивариум»
+  (ARCHIVE_CHANNEL_ID), если канал задан.
 """
 import json
 import logging
@@ -255,6 +257,18 @@ def poll_view(p: dict) -> discord.ui.View:
     return view
 
 
+# ---------- журнал в «Архивариум» ----------
+
+async def archive(client: discord.Client, text: Optional[str] = None, embed: Optional[discord.Embed] = None) -> None:
+    if not config.ARCHIVE_CHANNEL_ID:
+        return
+    try:
+        channel = client.get_channel(config.ARCHIVE_CHANNEL_ID) or await client.fetch_channel(config.ARCHIVE_CHANNEL_ID)
+        await channel.send(content=text, embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException as e:
+        log.error("Не удалось записать в Архивариум: %s", e)
+
+
 # ---------- действия ----------
 
 async def cast_vote(interaction: discord.Interaction, pid: int, option: int) -> None:
@@ -304,6 +318,8 @@ async def close_poll(client: discord.Client, pid: int) -> None:
                            allowed_mentions=discord.AllowedMentions.none())
     except discord.HTTPException as e:
         log.error("Не удалось опубликовать итоги голосования %s: %s", pid, e)
+    link = f"https://discord.com/channels/{config.GUILD_ID}/{p['channel_id']}/{p['message_id']}"
+    await archive(client, f"📜 <t:{int(time.time())}:f> · Итоги голосования №{pid} · {link}", results_embed(p))
     log.info("Голосование %s завершено", pid)
 
 
@@ -318,6 +334,10 @@ async def end_early(interaction: discord.Interaction, pid: int) -> None:
         )
         return
     await interaction.response.send_message("⏹️ Голосование завершено, итоги опубликованы.", ephemeral=True)
+    await archive(
+        interaction.client,
+        f"⏹️ <t:{int(time.time())}:f> · {interaction.user.mention} завершил досрочно голосование №{pid}",
+    )
     await close_poll(interaction.client, pid)
 
 
@@ -447,6 +467,15 @@ class PollSetupView(discord.ui.View):
             return
         db.set(pid, channel_id=message.channel.id, message_id=message.id)
         log.info("Голосование %s создано (%s)", pid, interaction.user)
+        await archive(
+            interaction.client,
+            f"🗳️ <t:{int(time.time())}:f> · {interaction.user.mention} открыл голосование №{pid} "
+            f"в {message.channel.mention}\n"
+            f"**{d['question']}**\n"
+            + "\n".join(f"{LETTERS[i]} {o}" for i, o in enumerate(d["options"]))
+            + f"\n{AUDIENCES[d['audience']]} · {'🔒 Тайное' if d['secret'] else '👁️ Открытое'} · "
+            f"до <t:{p['ends_at']}:f>\n{message.jump_url}",
+        )
         await interaction.edit_original_response(content=f"✅ Голосование №{pid} опубликовано: {message.jump_url}")
 
 

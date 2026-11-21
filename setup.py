@@ -19,6 +19,7 @@ QUESTIONS = [
     ("SECRETARIUM_CHANNEL_ID", "ID канала «Секретариум» (карточки складов)", False, True),
     ("OFFICER_WAREHOUSE_CHANNEL_ID", "ID закрытого канала офицерских складов (Enter — пропустить)", False, True),
     ("AUDIT_CHANNEL_ID", "ID канала «Инвентариум» (журнал складов и резервные копии)", False, True),
+    ("ARCHIVE_CHANNEL_ID", "ID канала «Архивариум» (журнал Консулата)", False, True),
     ("PRINCEPS_ROLE_ID", "ID роли Принцепса", False, True),
     ("SENATE_ROLE_ID", "ID роли Сената (Enter — пропустить)", False, True),
     ("CONSUL_ROLE_ID", "ID роли Консулов", False, True),
