@@ -14,6 +14,7 @@ QUESTIONS = [
     ("MEMBER_ROLE_ID", "ID роли, которую получает принятый (Легионеры)", True, True),
     ("NEWCOMER_ROLE_ID", "ID роли «Плебей» (выдаётся при входе на сервер)", False, True),
     ("ALLY_ROLE_ID", "ID роли союзника", False, True),
+    ("WARDEN_ROLE_ID", "ID роли варденов", False, True),
     ("REVIEWER_ROLE_IDS", "ID ролей офицеров через запятую (Сенат, Консулы, Легаты, Центурионы)", True, None),
 ]
 

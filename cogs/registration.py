@@ -2,7 +2,7 @@
 
 Как это работает:
 0. Когда человек заходит на сервер, бот выдаёт ему роль «Плебей», приветствует
-   его в «Регистратуме» и прикладывает кнопки «Подать заявку» и «Я союзник».
+   его в «Регистратуме» и прикладывает кнопки «Подать заявку», «Я союзник» и «Я варден».
 1. Администратор пишет /регистратум — бот публикует панель с кнопкой «Подать заявку».
 2. Новичок жмёт кнопку и заполняет анкету.
 3. Анкета уходит в закрытый канал анкет с кнопками «Принять» / «Отклонить».
@@ -222,6 +222,57 @@ class AllyModal(discord.ui.Modal, title="Заявка союзника"):
         )
 
 
+class WardenModal(discord.ui.Modal, title="Заявка вардена"):
+    nickname = discord.ui.TextInput(label="Ник в Foxhole", max_length=64)
+    unit = discord.ui.TextInput(
+        label="Ваш полк / клан",
+        placeholder="Название и тег",
+        max_length=100,
+        required=False,
+    )
+    purpose = discord.ui.TextInput(
+        label="Цель визита на сервер",
+        style=discord.TextStyle.paragraph,
+        placeholder="Переговоры, совместные ивенты, обмен…",
+        max_length=500,
+    )
+    contact = discord.ui.TextInput(
+        label="Кто из Легиона вас пригласил",
+        max_length=200,
+        required=False,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await submit_application(
+            interaction,
+            kind="warden",
+            title="🛡️ Заявка вардена",
+            fields=[
+                ("Ник в Foxhole", self.nickname.value, True),
+                ("Полк / клан", self.unit.value, True),
+                ("Цель визита", self.purpose.value, False),
+                ("Пригласил", self.contact.value, False),
+            ],
+            nickname=self.nickname.value,
+        )
+
+
+# Тип заявки → (ID роли, название ключа в .env, сообщение принятому)
+def role_for(kind: str) -> tuple[int, str]:
+    if kind == "ally":
+        return config.ALLY_ROLE_ID, "ALLY_ROLE_ID"
+    if kind == "warden":
+        return config.WARDEN_ROLE_ID, "WARDEN_ROLE_ID"
+    return config.MEMBER_ROLE_ID, "MEMBER_ROLE_ID"
+
+
+WELCOME_TEXT = {
+    "member": "🦅 Ave! Ваша заявка в Легион принята. Добро пожаловать в ряды, {name}!",
+    "ally": "🤝 Ave, {name}! Легион признаёт вас союзником. Рады видеть вас на нашем сервере.",
+    "warden": "🛡️ {name}, ваша заявка принята. Вам открыт канал для варденов на сервере Легиона.",
+}
+
+
 class RegistrationView(discord.ui.View):
     """Кнопка на панели в «Регистратуме». Работает и после перезапуска бота."""
 
@@ -237,6 +288,9 @@ class RegistrationView(discord.ui.View):
             return False
         if config.ALLY_ROLE_ID and config.ALLY_ROLE_ID in role_ids:
             await interaction.response.send_message("Вы уже союзник Легиона. 🤝", ephemeral=True)
+            return False
+        if config.WARDEN_ROLE_ID and config.WARDEN_ROLE_ID in role_ids:
+            await interaction.response.send_message("Вы уже получили роль варденов. 🛡️", ephemeral=True)
             return False
 
         app = load_data().get(str(member.id))
@@ -265,6 +319,18 @@ class RegistrationView(discord.ui.View):
             return
         if await self._can_apply(interaction):
             await interaction.response.send_modal(AllyModal())
+
+    @discord.ui.button(
+        label="Я варден", emoji="🛡️", style=discord.ButtonStyle.secondary, custom_id="prok:warden"
+    )
+    async def warden(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not config.WARDEN_ROLE_ID:
+            await interaction.response.send_message(
+                "Приём варденов пока не настроен. Обратитесь к офицерам.", ephemeral=True
+            )
+            return
+        if await self._can_apply(interaction):
+            await interaction.response.send_modal(WardenModal())
 
 
 # ---------- рассмотрение заявки ----------
@@ -360,11 +426,10 @@ class ReviewView(discord.ui.View):
             await interaction.edit_original_response(embed=embed, view=None)
             return
 
-        is_ally = app.get("kind") == "ally"
-        role_id = config.ALLY_ROLE_ID if is_ally else config.MEMBER_ROLE_ID
-        member_role = guild.get_role(role_id)
+        kind = app.get("kind", "member")
+        role_id, key = role_for(kind)
+        member_role = guild.get_role(role_id) if role_id else None
         if member_role is None:
-            key = "ALLY_ROLE_ID" if is_ally else "MEMBER_ROLE_ID"
             await interaction.followup.send(f"Роль не найдена. Проверьте {key} в .env.", ephemeral=True)
             return
 
@@ -386,10 +451,7 @@ class ReviewView(discord.ui.View):
         app["reviewed_by"] = interaction.user.id
         save_data(data)
 
-        if is_ally:
-            welcome = f"🤝 Ave, {member.display_name}! Легион признаёт вас союзником. Рады видеть вас на нашем сервере."
-        else:
-            welcome = f"🦅 Ave! Ваша заявка в Легион принята. Добро пожаловать в ряды, {member.display_name}!"
+        welcome = WELCOME_TEXT.get(kind, WELCOME_TEXT["member"]).format(name=member.display_name)
         delivered = await notify(member, welcome)
         status = f"✅ Принята — {interaction.user.mention}"
         if not delivered:
@@ -437,7 +499,8 @@ class Registration(commands.Cog):
             description=(
                 f"Добро пожаловать к воротам Легиона, {member.mention}.\n\n"
                 "📝 Чтобы вступить в наши ряды, нажмите «Подать заявку».\n"
-                "🤝 Если вы из союзного полка, нажмите «Я союзник».\n\n"
+                "🤝 Если вы из союзного полка, нажмите «Я союзник».\n"
+                "🛡️ Если вы играете за варденов, нажмите «Я варден».\n\n"
                 "Офицеры рассмотрят анкету и ответят вам в личные сообщения."
             ),
             color=discord.Color.dark_red(),
@@ -465,7 +528,8 @@ class Registration(commands.Cog):
             description=(
                 "Приветствуем, путник!\n\n"
                 "📝 Чтобы вступить в Легион, нажмите «Подать заявку».\n"
-                "🤝 Если вы из союзного полка, нажмите «Я союзник».\n\n"
+                "🤝 Если вы из союзного полка, нажмите «Я союзник».\n"
+                "🛡️ Если вы играете за варденов, нажмите «Я варден».\n\n"
                 "Офицеры рассмотрят анкету и ответят вам в личные сообщения.\n\n"
                 "*Senatus Populusque Legionis*"
             ),

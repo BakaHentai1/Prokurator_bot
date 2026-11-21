@@ -42,6 +42,7 @@ FORMS_CHANNEL_ID = _int("FORMS_CHANNEL_ID")
 MEMBER_ROLE_ID = _int("MEMBER_ROLE_ID")
 NEWCOMER_ROLE_ID = _int("NEWCOMER_ROLE_ID", required=False)  # «Плебей»
 ALLY_ROLE_ID = _int("ALLY_ROLE_ID", required=False)  # «Союзник»
+WARDEN_ROLE_ID = _int("WARDEN_ROLE_ID", required=False)  # «Варден» (гости другой фракции)
 REVIEWER_ROLE_IDS = _ids("REVIEWER_ROLE_IDS")
 
 DATA_DIR = BASE_DIR / "data"
