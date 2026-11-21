@@ -927,6 +927,86 @@ async def send_reminder(client: discord.Client, wh: dict, stage: int) -> None:
     log.info("Напоминание %d о складе %s отправлено в Секретариум", stage, wh["id"])
 
 
+# ---------- списки складов и закреплённая панель ----------
+
+async def send_list(interaction: discord.Interaction, items: list[dict], title: str, empty: str) -> None:
+    """Отправляет список складов, который видит только нажавший."""
+    if not items:
+        await interaction.response.send_message(empty, ephemeral=True)
+        return
+    lines = []
+    for w in items[:20]:
+        line = f"**№{w['id']} · {w['name']}** — {w['region']}"
+        if w["coords"]:
+            line += f" ({w['coords']})"
+        line += f"\n{STATUSES[w['status']][0]} · {w['purpose'] or '—'} · <@{w['owner_id']}>"
+        line += f" · ♻️ <t:{w['refreshed_at']}:R>"
+        if w["category"] in ("officer", "personal"):
+            line += " · " + CATEGORIES[w["category"]].split()[0]
+        if jump_url(w):
+            line += f" · [карточка]({jump_url(w)})"
+        lines.append(line)
+    embed = discord.Embed(
+        title=f"{title}: {len(items)}",
+        description="\n\n".join(lines)[:4000],
+        color=discord.Color.dark_red(),
+    )
+    if len(items) > 20:
+        embed.set_footer(text="Показаны первые 20 — для точного поиска используйте /склад найти")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+def sort_key(w: dict) -> tuple:
+    return (w["region"].casefold(), (w["coords"] or "").casefold(), w["name"].casefold())
+
+
+class PanelView(discord.ui.View):
+    """Кнопки закреплённой панели в «Секретариуме». Работают и после перезапуска бота."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Добавить склад", emoji="➕", style=discord.ButtonStyle.success, custom_id="whp:add")
+    async def add(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not has(interaction.user, "create"):
+            await deny(interaction)
+            return
+        await interaction.response.send_modal(WarehouseForm())
+
+    @discord.ui.button(label="Все склады", emoji="📋", style=discord.ButtonStyle.primary, custom_id="whp:list")
+    async def list_all(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not has(interaction.user, "search"):
+            await deny(interaction)
+            return
+        items = sorted(
+            (w for w in db.all() if w["status"] != "closed" and can_see(interaction.user, w)), key=sort_key
+        )
+        await send_list(interaction, items, "📋 Склады Легиона", "Складов пока нет.")
+
+    @discord.ui.button(label="Мои склады", emoji="👤", style=discord.ButtonStyle.secondary, custom_id="whp:mine")
+    async def mine(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        items = sorted(
+            (w for w in db.all() if w["status"] != "closed" and w["owner_id"] == interaction.user.id), key=sort_key
+        )
+        await send_list(interaction, items, "👤 Ваши склады", "У вас пока нет складов.")
+
+
+def panel_embed() -> discord.Embed:
+    return discord.Embed(
+        title="🏛️ СЕКРЕТАРИУМ ЛЕГИОНА",
+        description=(
+            "Учёт складов Легиона.\n\n"
+            "➕ **Добавить склад** — зарегистрировать новый склад.\n"
+            "📋 **Все склады** — список складов, доступных вам.\n"
+            "👤 **Мои склады** — склады, где вы владелец, включая личные.\n\n"
+            "Пароли выдаются только в личные сообщения кнопкой «🔑 Пароль» на карточке склада. "
+            "После обновления склада в игре нажмите «♻️ Обновил».\n\n"
+            "*Senatus Populusque Legionis*"
+        ),
+        color=discord.Color.dark_red(),
+    )
+
+
 # ---------- команды ----------
 
 def _autocomplete(interaction: discord.Interaction, current: str, column: str) -> list[app_commands.Choice[str]]:
@@ -1036,30 +1116,31 @@ class Warehouses(commands.Cog):
             return True
 
         found = [w for w in db.all() if matches(w)]
-        if not found:
-            await interaction.response.send_message("Ничего не найдено.", ephemeral=True)
-            return
+        await send_list(interaction, found, "🔎 Найдено складов", "Ничего не найдено.")
 
-        lines = []
-        for w in found[:20]:
-            line = f"**№{w['id']} · {w['name']}** — {w['region']}"
-            if w["coords"]:
-                line += f" ({w['coords']})"
-            line += f"\n{STATUSES[w['status']][0]} · {w['purpose'] or '—'} · <@{w['owner_id']}>"
-            line += f" · ♻️ <t:{w['refreshed_at']}:R>"
-            if w["category"] in ("officer", "personal"):
-                line += " · " + CATEGORIES[w["category"]].split()[0]
-            if jump_url(w):
-                line += f" · [карточка]({jump_url(w)})"
-            lines.append(line)
-        embed = discord.Embed(
-            title=f"🔎 Найдено складов: {len(found)}",
-            description="\n\n".join(lines)[:4000],
-            color=discord.Color.dark_red(),
-        )
-        if len(found) > 20:
-            embed.set_footer(text="Показаны первые 20 — уточните запрос")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+    @sklad.command(name="панель", description="Опубликовать и закрепить панель складов в Секретариуме")
+    async def post_panel(self, interaction: discord.Interaction) -> None:
+        if not has(interaction.user, "perms"):
+            await deny(interaction)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            channel = self.bot.get_channel(config.SECRETARIUM_CHANNEL_ID) or await self.bot.fetch_channel(
+                config.SECRETARIUM_CHANNEL_ID
+            )
+            message = await channel.send(embed=panel_embed(), view=PanelView())
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"Не удалось опубликовать панель: {e.text or e}", ephemeral=True)
+            return
+        try:
+            await message.pin(reason="Панель складов")
+            note = "и закреплена"
+        except discord.HTTPException:
+            note = (
+                "но закрепить её не вышло: дайте боту право «Закреплять сообщения» "
+                "(или «Управлять сообщениями») либо закрепите вручную"
+            )
+        await interaction.followup.send(f"✅ Панель опубликована {note}: {message.jump_url}", ephemeral=True)
 
     @sklad.command(name="журнал", description="Журнал действий со складом")
     @app_commands.describe(номер="Номер склада (№ на карточке)")
@@ -1136,4 +1217,5 @@ async def setup(bot: commands.Bot) -> None:
         return
     db = DB(DB_PATH)
     bot.add_dynamic_items(CardButton)
+    bot.add_view(PanelView())
     await bot.add_cog(Warehouses(bot))
