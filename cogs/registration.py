@@ -1,7 +1,8 @@
 """Регистратум: анкета новичка и рассмотрение заявок офицерами.
 
 Как это работает:
-0. Когда человек заходит на сервер, бот выдаёт ему роль «Плебей», приветствует
+0. Когда человек заходит на сервер, бот выдаёт ему роль «Плебей», пишет в личку
+   со ссылкой на «Регистратум», приветствует
    его в «Регистратуме» и прикладывает кнопки «Вступить в Легион», «Я союзник» и «Я варден».
 1. Администратор пишет /регистратум — бот публикует панель с кнопкой «Вступить в Легион».
 2. Новичок жмёт кнопку и заполняет анкету.
@@ -76,6 +77,15 @@ async def notify(user: discord.abc.User, text: str) -> bool:
     """Пишет человеку в личку. Возвращает False, если личка закрыта."""
     try:
         await user.send(text)
+        return True
+    except (discord.Forbidden, discord.HTTPException):
+        return False
+
+
+async def notify_with_view(user: discord.abc.User, text: str, view: discord.ui.View) -> bool:
+    """Пишет человеку в личку сообщение с кнопками. False — если личка закрыта."""
+    try:
+        await user.send(text, view=view)
         return True
     except (discord.Forbidden, discord.HTTPException):
         return False
@@ -489,6 +499,20 @@ class Registration(commands.Cog):
                     await member.add_roles(pleb, reason="Новоприбывший")
                 except discord.HTTPException as e:
                     log.error("Не удалось выдать «Плебея» %s: %s", member, e)
+
+        # Личное сообщение со ссылкой на Регистратум
+        link = f"https://discord.com/channels/{member.guild.id}/{config.REGISTRATUM_CHANNEL_ID}"
+        dm_view = discord.ui.View()
+        dm_view.add_item(discord.ui.Button(label="Перейти в Регистратум", emoji="🏛️", url=link))
+        if not await notify_with_view(
+            member,
+            "**AVE!** До прохождения регистрации тебе присвоен статус **Плебей**.\n\n"
+            f"Посети канал <#{config.REGISTRATUM_CHANNEL_ID}>, чтобы подать заявку "
+            "и получить соответствующий статус.\n\n"
+            "*Senatus Populusque Legionis*",
+            dm_view,
+        ):
+            log.info("Не удалось написать в личку %s: личка закрыта", member)
 
         channel = member.guild.get_channel(config.REGISTRATUM_CHANNEL_ID)
         if channel is None:
