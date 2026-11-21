@@ -88,6 +88,10 @@ class DB:
         self.conn.execute(f"UPDATE polls SET {cols} WHERE id = ?", (*fields.values(), pid))
         self.conn.commit()
 
+    def open_polls(self) -> list[dict]:
+        rows = self.conn.execute("SELECT id FROM polls WHERE status = 'open' AND message_id IS NOT NULL ORDER BY ends_at")
+        return [self.get(r["id"]) for r in rows]
+
     def due(self) -> list[int]:
         rows = self.conn.execute("SELECT id FROM polls WHERE status = 'open' AND ends_at <= ?", (int(time.time()),))
         return [r["id"] for r in rows]
@@ -479,6 +483,60 @@ class PollSetupView(discord.ui.View):
         await interaction.edit_original_response(content=f"✅ Голосование №{pid} опубликовано: {message.jump_url}")
 
 
+# ---------- закреплённая панель ----------
+
+class ConsulatePanel(discord.ui.View):
+    """Кнопки закреплённой панели Консулата. Работают и после перезапуска бота."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Новое голосование", emoji="🗳️", style=discord.ButtonStyle.success, custom_id="cons:poll")
+    async def new_poll(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not can_create(interaction.user):
+            await interaction.response.send_message(
+                "⛔ Голосования создают Принцепс, Консулы и Сенат.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(PollForm())
+
+    @discord.ui.button(label="Идущие голосования", emoji="📋", style=discord.ButtonStyle.primary, custom_id="cons:active")
+    async def active(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        polls = db.open_polls()
+        if not polls:
+            await interaction.response.send_message("Сейчас голосований нет.", ephemeral=True)
+            return
+        lines = []
+        for p in polls[:20]:
+            link = f"https://discord.com/channels/{config.GUILD_ID}/{p['channel_id']}/{p['message_id']}"
+            lines.append(
+                f"**№{p['id']} · {p['question'][:100]}**\n"
+                f"{AUDIENCES[p['audience']]} · проголосовало {db.count(p['id'])} · "
+                f"до <t:{p['ends_at']}:R> · [открыть]({link})"
+            )
+        embed = discord.Embed(
+            title=f"📋 Идущие голосования: {len(polls)}",
+            description="\n\n".join(lines)[:4000],
+            color=discord.Color.dark_red(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+def panel_embed() -> discord.Embed:
+    return discord.Embed(
+        title="🏛️ КОНСУЛАТ ЛЕГИОНА",
+        description=(
+            "Панель командования.\n\n"
+            "🗳️ **Новое голосование** — вопрос, варианты, срок; тайное или открытое. "
+            "Итоги бот опубликует сам.\n"
+            "📋 **Идущие голосования** — список с числом проголосовавших и временем до конца.\n\n"
+            "Журнал Консулата ведётся в «Архивариуме».\n\n"
+            "*Senatus Populusque Legionis*"
+        ),
+        color=discord.Color.dark_red(),
+    )
+
+
 class Consulate(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -501,6 +559,26 @@ class Consulate(commands.Cog):
     async def before_closer(self) -> None:
         await self.bot.wait_until_ready()
 
+    @app_commands.command(name="консулат", description="Опубликовать и закрепить панель Консулата в этом канале")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def post_panel(self, interaction: discord.Interaction) -> None:
+        if not can_create(interaction.user):
+            await interaction.response.send_message("⛔ Недостаточно прав.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            message = await interaction.channel.send(embed=panel_embed(), view=ConsulatePanel())
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"Не удалось опубликовать панель: {e.text or e}", ephemeral=True)
+            return
+        try:
+            await message.pin(reason="Панель Консулата")
+            note = "и закреплена"
+        except discord.HTTPException:
+            note = "но закрепить не вышло: дайте боту право «Закреплять сообщения» или закрепите вручную"
+        await interaction.followup.send(f"✅ Панель опубликована {note}.", ephemeral=True)
+
     @app_commands.command(name="голосование", description="Создать голосование в этом канале")
     @app_commands.guild_only()
     async def new_poll(self, interaction: discord.Interaction) -> None:
@@ -516,4 +594,5 @@ async def setup(bot: commands.Bot) -> None:
     global db
     db = DB(DB_PATH)
     bot.add_dynamic_items(PollButton)
+    bot.add_view(ConsulatePanel())
     await bot.add_cog(Consulate(bot))
