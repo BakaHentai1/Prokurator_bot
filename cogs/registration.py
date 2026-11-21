@@ -1,8 +1,8 @@
 """Регистратум: анкета новичка и рассмотрение заявок офицерами.
 
 Как это работает:
-0. Когда человек заходит на сервер, бот приветствует его в «Регистратуме»
-   и сразу прикладывает кнопку «Подать заявку».
+0. Когда человек заходит на сервер, бот выдаёт ему роль «Плебей», приветствует
+   его в «Регистратуме» и прикладывает кнопки «Подать заявку» и «Я союзник».
 1. Администратор пишет /регистратум — бот публикует панель с кнопкой «Подать заявку».
 2. Новичок жмёт кнопку и заполняет анкету.
 3. Анкета уходит в закрытый канал анкет с кнопками «Принять» / «Отклонить».
@@ -81,6 +81,64 @@ async def notify(user: discord.abc.User, text: str) -> bool:
         return False
 
 
+# ---------- отправка анкеты в канал анкет ----------
+
+async def submit_application(
+    interaction: discord.Interaction, kind: str, title: str, fields: list[tuple[str, str, bool]], nickname: str
+) -> None:
+    """Публикует анкету в канале анкет с кнопками «Принять» / «Отклонить»."""
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    user = interaction.user
+    channel = interaction.client.get_channel(config.FORMS_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await interaction.client.fetch_channel(config.FORMS_CHANNEL_ID)
+        except discord.HTTPException:
+            log.error("Канал анкет %s не найден", config.FORMS_CHANNEL_ID)
+            await interaction.followup.send(
+                "Не удалось отправить анкету: канал анкет не найден. Сообщите офицерам.", ephemeral=True
+            )
+            return
+
+    embed = discord.Embed(
+        title=title,
+        description=f"{user.mention} — `{user}`",
+        color=COLOR_PENDING,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=user.display_avatar.url)
+    for name, value, inline in fields:
+        embed.add_field(name=name, value=value or "—", inline=inline)
+    embed.add_field(name=STATUS_FIELD, value=STATUS_PENDING, inline=False)
+    embed.set_footer(text=f"ID заявителя: {user.id}")
+
+    try:
+        message = await channel.send(embed=embed, view=ReviewView())
+    except discord.Forbidden:
+        log.error("Нет прав писать в канал анкет")
+        await interaction.followup.send(
+            "Не удалось отправить анкету: у бота нет прав в канале анкет. Сообщите офицерам.", ephemeral=True
+        )
+        return
+
+    data = load_data()
+    data[str(user.id)] = {
+        "status": "pending",
+        "kind": kind,
+        "message_id": message.id,
+        "nickname": nickname,
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    save_data(data)
+    log.info("Новая заявка (%s) от %s (%s)", kind, user, user.id)
+
+    await interaction.followup.send(
+        "✅ Анкета отправлена! Офицеры Легиона рассмотрят её и ответят вам в личные сообщения. "
+        "Пожалуйста, не закрывайте личку от участников сервера.",
+        ephemeral=True,
+    )
+
+
 # ---------- анкета новичка ----------
 
 class ApplicationModal(discord.ui.Modal, title="Заявка в Легион"):
@@ -108,59 +166,59 @@ class ApplicationModal(discord.ui.Modal, title="Заявка в Легион"):
     )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        user = interaction.user
-        channel = interaction.client.get_channel(config.FORMS_CHANNEL_ID)
-        if channel is None:
-            try:
-                channel = await interaction.client.fetch_channel(config.FORMS_CHANNEL_ID)
-            except discord.HTTPException:
-                log.error("Канал анкет %s не найден", config.FORMS_CHANNEL_ID)
-                await interaction.followup.send(
-                    "Не удалось отправить анкету: канал анкет не найден. Сообщите офицерам.",
-                    ephemeral=True,
-                )
-                return
-
-        embed = discord.Embed(
+        await submit_application(
+            interaction,
+            kind="member",
             title="📜 Новая заявка в Легион",
-            description=f"{user.mention} — `{user}`",
-            color=COLOR_PENDING,
-            timestamp=datetime.now(timezone.utc),
+            fields=[
+                ("Ник в Foxhole", self.nickname.value, True),
+                ("Онлайн", self.online.value, True),
+                ("Опыт", self.experience.value, False),
+                ("Откуда узнал", self.source.value, False),
+                ("Почему к нам", self.motivation.value, False),
+            ],
+            nickname=self.nickname.value,
         )
-        embed.set_thumbnail(url=user.display_avatar.url)
-        embed.add_field(name="Ник в Foxhole", value=self.nickname.value, inline=True)
-        embed.add_field(name="Онлайн", value=self.online.value, inline=True)
-        embed.add_field(name="Опыт", value=self.experience.value, inline=False)
-        embed.add_field(name="Откуда узнал", value=self.source.value or "—", inline=False)
-        embed.add_field(name="Почему к нам", value=self.motivation.value, inline=False)
-        embed.add_field(name=STATUS_FIELD, value=STATUS_PENDING, inline=False)
-        embed.set_footer(text=f"ID заявителя: {user.id}")
 
-        try:
-            message = await channel.send(embed=embed, view=ReviewView())
-        except discord.Forbidden:
-            log.error("Нет прав писать в канал анкет")
-            await interaction.followup.send(
-                "Не удалось отправить анкету: у бота нет прав в канале анкет. Сообщите офицерам.",
-                ephemeral=True,
-            )
-            return
 
-        data = load_data()
-        data[str(user.id)] = {
-            "status": "pending",
-            "message_id": message.id,
-            "nickname": self.nickname.value,
-            "submitted_at": datetime.now(timezone.utc).isoformat(),
-        }
-        save_data(data)
-        log.info("Новая заявка от %s (%s)", user, user.id)
+class AllyModal(discord.ui.Modal, title="Заявка союзника"):
+    nickname = discord.ui.TextInput(label="Ник в Foxhole", max_length=64)
+    unit = discord.ui.TextInput(
+        label="Ваш полк / клан",
+        placeholder="Название и тег",
+        max_length=100,
+    )
+    position = discord.ui.TextInput(
+        label="Ваша должность в нём",
+        placeholder="Например: офицер, логист, рядовой",
+        max_length=100,
+        required=False,
+    )
+    purpose = discord.ui.TextInput(
+        label="Цель визита на сервер",
+        style=discord.TextStyle.paragraph,
+        placeholder="Совместные операции, связь между полками, логистика…",
+        max_length=500,
+    )
+    contact = discord.ui.TextInput(
+        label="Кто из Легиона может за вас поручиться",
+        max_length=200,
+        required=False,
+    )
 
-        await interaction.followup.send(
-            "✅ Анкета отправлена! Офицеры Легиона рассмотрят её и ответят вам в личные сообщения. "
-            "Пожалуйста, не закрывайте личку от участников сервера.",
-            ephemeral=True,
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await submit_application(
+            interaction,
+            kind="ally",
+            title="🤝 Заявка союзника",
+            fields=[
+                ("Ник в Foxhole", self.nickname.value, True),
+                ("Полк / клан", self.unit.value, True),
+                ("Должность", self.position.value, True),
+                ("Цель визита", self.purpose.value, False),
+                ("Поручитель", self.contact.value, False),
+            ],
+            nickname=self.nickname.value,
         )
 
 
@@ -170,23 +228,43 @@ class RegistrationView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
-    @discord.ui.button(
-        label="Подать заявку", emoji="📝", style=discord.ButtonStyle.primary, custom_id="prok:apply"
-    )
-    async def apply(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    @staticmethod
+    async def _can_apply(interaction: discord.Interaction) -> bool:
         member = interaction.user
-        if isinstance(member, discord.Member) and any(r.id == config.MEMBER_ROLE_ID for r in member.roles):
+        role_ids = {r.id for r in getattr(member, "roles", [])}
+        if config.MEMBER_ROLE_ID in role_ids:
             await interaction.response.send_message("Вы уже состоите в Легионе. 🦅", ephemeral=True)
-            return
+            return False
+        if config.ALLY_ROLE_ID and config.ALLY_ROLE_ID in role_ids:
+            await interaction.response.send_message("Вы уже союзник Легиона. 🤝", ephemeral=True)
+            return False
 
         app = load_data().get(str(member.id))
         if app and app.get("status") == "pending":
             await interaction.response.send_message(
                 "Ваша заявка уже на рассмотрении. Дождитесь ответа офицеров.", ephemeral=True
             )
-            return
+            return False
+        return True
 
-        await interaction.response.send_modal(ApplicationModal())
+    @discord.ui.button(
+        label="Подать заявку", emoji="📝", style=discord.ButtonStyle.primary, custom_id="prok:apply"
+    )
+    async def apply(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if await self._can_apply(interaction):
+            await interaction.response.send_modal(ApplicationModal())
+
+    @discord.ui.button(
+        label="Я союзник", emoji="🤝", style=discord.ButtonStyle.secondary, custom_id="prok:ally"
+    )
+    async def ally(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not config.ALLY_ROLE_ID:
+            await interaction.response.send_message(
+                "Приём союзников пока не настроен. Обратитесь к офицерам.", ephemeral=True
+            )
+            return
+        if await self._can_apply(interaction):
+            await interaction.response.send_modal(AllyModal())
 
 
 # ---------- рассмотрение заявки ----------
@@ -230,7 +308,7 @@ class RejectModal(discord.ui.Modal, title="Отклонение заявки"):
             user = await interaction.client.fetch_user(self.applicant_id)
             delivered = await notify(
                 user,
-                f"К сожалению, ваша заявка в Легион отклонена.\nПричина: {reason}",
+                f"К сожалению, ваша заявка отклонена.\nПричина: {reason}",
             )
         except discord.HTTPException:
             pass
@@ -282,11 +360,12 @@ class ReviewView(discord.ui.View):
             await interaction.edit_original_response(embed=embed, view=None)
             return
 
-        member_role = guild.get_role(config.MEMBER_ROLE_ID)
+        is_ally = app.get("kind") == "ally"
+        role_id = config.ALLY_ROLE_ID if is_ally else config.MEMBER_ROLE_ID
+        member_role = guild.get_role(role_id)
         if member_role is None:
-            await interaction.followup.send(
-                "Роль легионера не найдена. Проверьте MEMBER_ROLE_ID в .env.", ephemeral=True
-            )
+            key = "ALLY_ROLE_ID" if is_ally else "MEMBER_ROLE_ID"
+            await interaction.followup.send(f"Роль не найдена. Проверьте {key} в .env.", ephemeral=True)
             return
 
         try:
@@ -294,11 +373,11 @@ class ReviewView(discord.ui.View):
             if config.NEWCOMER_ROLE_ID:
                 newcomer = guild.get_role(config.NEWCOMER_ROLE_ID)
                 if newcomer and newcomer in member.roles:
-                    await member.remove_roles(newcomer, reason="Принят в Легион")
+                    await member.remove_roles(newcomer, reason="Заявка принята")
         except discord.Forbidden:
             await interaction.followup.send(
                 "У бота не хватает прав выдать роль. В настройках сервера роль бота должна стоять "
-                "выше роли легионера, и у бота должно быть право «Управлять ролями».",
+                "выше выдаваемых ролей, и у бота должно быть право «Управлять ролями».",
                 ephemeral=True,
             )
             return
@@ -307,10 +386,11 @@ class ReviewView(discord.ui.View):
         app["reviewed_by"] = interaction.user.id
         save_data(data)
 
-        delivered = await notify(
-            member,
-            f"🦅 Ave! Ваша заявка в Легион принята. Добро пожаловать в ряды, {member.display_name}!",
-        )
+        if is_ally:
+            welcome = f"🤝 Ave, {member.display_name}! Легион признаёт вас союзником. Рады видеть вас на нашем сервере."
+        else:
+            welcome = f"🦅 Ave! Ваша заявка в Легион принята. Добро пожаловать в ряды, {member.display_name}!"
+        delivered = await notify(member, welcome)
         status = f"✅ Принята — {interaction.user.mention}"
         if not delivered:
             status += "\n(личка заявителя закрыта, уведомление не доставлено)"
@@ -338,6 +418,16 @@ class Registration(commands.Cog):
         """Приветствует нового участника в Регистратуме и предлагает подать заявку."""
         if member.bot or member.guild.id != config.GUILD_ID:
             return
+        if config.NEWCOMER_ROLE_ID:
+            pleb = member.guild.get_role(config.NEWCOMER_ROLE_ID)
+            if pleb is None:
+                log.error("Роль «Плебей» %s не найдена", config.NEWCOMER_ROLE_ID)
+            else:
+                try:
+                    await member.add_roles(pleb, reason="Новоприбывший")
+                except discord.HTTPException as e:
+                    log.error("Не удалось выдать «Плебея» %s: %s", member, e)
+
         channel = member.guild.get_channel(config.REGISTRATUM_CHANNEL_ID)
         if channel is None:
             log.error("Канал Регистратума %s не найден", config.REGISTRATUM_CHANNEL_ID)
@@ -346,8 +436,9 @@ class Registration(commands.Cog):
             title="🏛️ Ave, путник!",
             description=(
                 f"Добро пожаловать к воротам Легиона, {member.mention}.\n\n"
-                "Чтобы вступить в наши ряды, нажмите кнопку ниже и заполните короткую анкету. "
-                "Офицеры рассмотрят её и ответят вам в личные сообщения."
+                "📝 Чтобы вступить в наши ряды, нажмите «Подать заявку».\n"
+                "🤝 Если вы из союзного полка, нажмите «Я союзник».\n\n"
+                "Офицеры рассмотрят анкету и ответят вам в личные сообщения."
             ),
             color=discord.Color.dark_red(),
         )
@@ -373,8 +464,9 @@ class Registration(commands.Cog):
             title="🏛️ Регистратум Легиона",
             description=(
                 "Приветствуем, путник!\n\n"
-                "Чтобы вступить в Легион, нажмите кнопку ниже и заполните короткую анкету. "
-                "Офицеры рассмотрят её и ответят вам в личные сообщения.\n\n"
+                "📝 Чтобы вступить в Легион, нажмите «Подать заявку».\n"
+                "🤝 Если вы из союзного полка, нажмите «Я союзник».\n\n"
+                "Офицеры рассмотрят анкету и ответят вам в личные сообщения.\n\n"
                 "*Senatus Populusque Legionis*"
             ),
             color=discord.Color.dark_red(),

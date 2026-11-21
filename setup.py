@@ -12,7 +12,8 @@ QUESTIONS = [
     ("REGISTRATUM_CHANNEL_ID", "ID канала «Регистратум»", True, True),
     ("FORMS_CHANNEL_ID", "ID закрытого канала для анкет", True, True),
     ("MEMBER_ROLE_ID", "ID роли, которую получает принятый (Легионеры)", True, True),
-    ("NEWCOMER_ROLE_ID", "ID роли новичка, которую снять при принятии (Enter — пропустить)", False, True),
+    ("NEWCOMER_ROLE_ID", "ID роли «Плебей» (выдаётся при входе на сервер)", False, True),
+    ("ALLY_ROLE_ID", "ID роли союзника", False, True),
     ("REVIEWER_ROLE_IDS", "ID ролей офицеров через запятую (Сенат, Консулы, Легаты, Центурионы)", True, None),
 ]
 
