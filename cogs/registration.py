@@ -4,7 +4,8 @@
 0. Когда человек заходит на сервер, бот выдаёт ему роль «Плебей», пишет в личку
    со ссылкой на «Регистратум», приветствует
    его в «Регистратуме» и прикладывает кнопки «Вступить в Легион», «Я союзник» и «Я варден».
-1. Администратор пишет /регистратум — бот публикует панель с кнопкой «Вступить в Легион».
+   Приветствие удаляется, когда человек подал заявку или ушёл с сервера.
+1. Администратор пишет /регистратум — бот публикует и закрепляет панель с кнопками.
 2. Новичок жмёт кнопку и заполняет анкету.
 3. Анкета уходит в закрытый канал анкет с кнопками «Принять» / «Отклонить».
 4. Решение принимает человек с ролью рецензента. При принятии бот выдаёт роль
@@ -24,6 +25,7 @@ import config
 log = logging.getLogger("registration")
 
 DATA_FILE: Path = config.DATA_DIR / "applications.json"
+GREETINGS_FILE: Path = config.DATA_DIR / "greetings.json"  # user_id → [channel_id, message_id]
 
 STATUS_FIELD = "Статус"
 STATUS_PENDING = "⏳ На рассмотрении"
@@ -46,6 +48,45 @@ def load_data() -> dict:
 def save_data(data: dict) -> None:
     DATA_FILE.parent.mkdir(exist_ok=True)
     DATA_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_greetings() -> dict:
+    if GREETINGS_FILE.exists():
+        try:
+            return json.loads(GREETINGS_FILE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            log.error("Файл %s повреждён, начинаю с пустого списка", GREETINGS_FILE)
+    return {}
+
+
+def save_greetings(data: dict) -> None:
+    GREETINGS_FILE.parent.mkdir(exist_ok=True)
+    GREETINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def remember_greeting(user_id: int, message: discord.Message) -> None:
+    data = load_greetings()
+    data[str(user_id)] = [message.channel.id, message.id]
+    save_greetings(data)
+
+
+async def delete_greeting(client: discord.Client, user_id: int) -> None:
+    """Удаляет приветствие человека из Регистратума, если оно ещё висит."""
+    data = load_greetings()
+    entry = data.pop(str(user_id), None)
+    if entry is None:
+        return
+    save_greetings(data)
+    channel = client.get_channel(entry[0])
+    if channel is None:
+        return
+    try:
+        await channel.get_partial_message(entry[1]).delete()
+        log.info("Удалил приветствие %s из Регистратума", user_id)
+    except discord.NotFound:
+        pass
+    except discord.HTTPException as e:
+        log.error("Не удалось удалить приветствие %s: %s", user_id, e)
 
 
 def find_by_message(data: dict, message_id: int) -> tuple[str, dict] | tuple[None, None]:
@@ -141,6 +182,7 @@ async def submit_application(
     }
     save_data(data)
     log.info("Новая заявка (%s) от %s (%s)", kind, user, user.id)
+    await delete_greeting(interaction.client, user.id)
 
     await interaction.followup.send(
         "✅ Анкета отправлена! Офицеры Легиона рассмотрят её и ответят вам в личные сообщения. "
@@ -531,15 +573,22 @@ class Registration(commands.Cog):
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         try:
-            await channel.send(
+            greeting = await channel.send(
                 content=member.mention,
                 embed=embed,
                 view=RegistrationView(),
                 allowed_mentions=discord.AllowedMentions(users=True),
             )
+            remember_greeting(member.id, greeting)
             log.info("Поприветствовал новичка %s (%s)", member, member.id)
         except discord.HTTPException as e:
             log.error("Не удалось поприветствовать %s: %s", member, e)
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member) -> None:
+        """Человек ушёл с сервера — убираем его приветствие."""
+        if member.guild.id == config.GUILD_ID:
+            await delete_greeting(self.bot, member.id)
 
     @app_commands.command(name="регистратум", description="Опубликовать панель подачи заявок в Регистратуме")
     @app_commands.default_permissions(administrator=True)
@@ -561,7 +610,7 @@ class Registration(commands.Cog):
             color=discord.Color.dark_red(),
         )
         try:
-            await channel.send(embed=embed, view=RegistrationView())
+            panel = await channel.send(embed=embed, view=RegistrationView())
         except discord.Forbidden:
             await interaction.followup.send(
                 f"У бота нет прав писать в {channel.mention}. Дайте роли бота в этом канале права "
@@ -569,7 +618,15 @@ class Registration(commands.Cog):
                 ephemeral=True,
             )
             return
-        await interaction.followup.send(f"Панель опубликована в {channel.mention}.", ephemeral=True)
+        try:
+            await panel.pin(reason="Панель Регистратума")
+            note = "и закреплена"
+        except discord.HTTPException:
+            note = (
+                "но закрепить её не вышло: дайте боту право «Закреплять сообщения» "
+                "(или «Управлять сообщениями») либо закрепите вручную"
+            )
+        await interaction.followup.send(f"✅ Панель опубликована в {channel.mention} {note}.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
