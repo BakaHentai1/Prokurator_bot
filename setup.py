@@ -20,6 +20,8 @@ QUESTIONS = [
     ("OFFICER_WAREHOUSE_CHANNEL_ID", "ID закрытого канала офицерских складов (Enter — пропустить)", False, True),
     ("AUDIT_CHANNEL_ID", "ID канала «Инвентариум» (журнал складов и резервные копии)", False, True),
     ("ARCHIVE_CHANNEL_ID", "ID канала «Архивариум» (журнал Консулата)", False, True),
+    ("LEGION_CHAT_CHANNEL_ID", "ID чата Легиона (напоминания об операциях)", False, True),
+    ("TZ_OFFSET", "Часовой пояс для времени операций, часы от UTC (МСК — 3, Алматы — 5)", False, "float"),
     ("PRINCEPS_ROLE_ID", "ID роли Принцепса", False, True),
     ("SENATE_ROLE_ID", "ID роли Сената (Enter — пропустить)", False, True),
     ("CONSUL_ROLE_ID", "ID роли Консулов", False, True),
@@ -42,6 +44,12 @@ def load_existing() -> dict:
 def valid(value: str, numeric) -> bool:
     if numeric is True:
         return value.isdigit()
+    if numeric == "float":
+        try:
+            float(value.replace(",", "."))
+            return True
+        except ValueError:
+            return False
     if numeric is None:  # список ID через запятую
         parts = [p for p in value.replace(" ", "").split(",") if p]
         return bool(parts) and all(p.isdigit() for p in parts)
@@ -67,7 +75,7 @@ def main() -> None:
                     continue
                 break
             if not valid(answer, numeric):
-                print("  Тут нужны только цифры (для нескольких ролей — через запятую).")
+                print("  Тут нужно число (для нескольких ролей — ID через запятую).")
                 continue
             break
         result[key] = answer

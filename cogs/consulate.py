@@ -500,6 +500,14 @@ class ConsulatePanel(discord.ui.View):
             return
         await interaction.response.send_modal(PollForm())
 
+    @discord.ui.button(label="Новая операция", emoji="⚔️", style=discord.ButtonStyle.danger, custom_id="cons:op")
+    async def new_op(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        from cogs.operations import OperationForm, can_create_op  # модуль операций загружается после этого
+        if not can_create_op(interaction.user):
+            await interaction.response.send_message("⛔ Операции объявляют офицеры.", ephemeral=True)
+            return
+        await interaction.response.send_modal(OperationForm())
+
     @discord.ui.button(label="Идущие голосования", emoji="📋", style=discord.ButtonStyle.primary, custom_id="cons:active")
     async def active(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         polls = db.open_polls()
@@ -529,6 +537,8 @@ def panel_embed() -> discord.Embed:
             "Панель командования.\n\n"
             "🗳️ **Новое голосование** — вопрос, варианты, срок; тайное или открытое. "
             "Итоги бот опубликует сам.\n"
+            "⚔️ **Новая операция** — время, место, задача; кнопки «Приду / Опоздаю / Не приду», "
+            "напоминание участникам за 30 минут в чате Легиона.\n"
             "📋 **Идущие голосования** — список с числом проголосовавших и временем до конца.\n\n"
             "Журнал Консулата ведётся в «Архивариуме».\n\n"
             "*Senatus Populusque Legionis*"

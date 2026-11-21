@@ -50,6 +50,14 @@ SECRETARIUM_CHANNEL_ID = _int("SECRETARIUM_CHANNEL_ID", required=False)
 OFFICER_WAREHOUSE_CHANNEL_ID = _int("OFFICER_WAREHOUSE_CHANNEL_ID", required=False)
 AUDIT_CHANNEL_ID = _int("AUDIT_CHANNEL_ID", required=False)
 
+# Операции: чат Легиона для напоминаний и часовой пояс ввода времени (часы от UTC, МСК = 3)
+LEGION_CHAT_CHANNEL_ID = _int("LEGION_CHAT_CHANNEL_ID", required=False)
+try:
+    TZ_OFFSET = float(os.getenv("TZ_OFFSET", "3").strip().replace(",", ".") or "3")
+except ValueError:
+    _missing.append("TZ_OFFSET (должно быть число, например 3 для МСК)")
+    TZ_OFFSET = 3.0
+
 # «Архивариум» — журнал Консулата (голосования, итоги)
 ARCHIVE_CHANNEL_ID = _int("ARCHIVE_CHANNEL_ID", required=False)
 
