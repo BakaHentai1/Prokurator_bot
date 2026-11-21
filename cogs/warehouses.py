@@ -9,6 +9,9 @@
    статус/категория, журнал. Права проверяются перед каждым действием.
 4. /склад найти — поиск по названию/номеру, гексу, региону, владельцу, назначению, статусу.
 5. Все действия пишутся в журнал (база data/legion.db, таблица audit_log).
+6. Склад в Foxhole удаляется, если его не обновлять 50 часов. Бот хранит время
+   последнего обновления (кнопка «Обновил») и напоминает за 12 ч и за 1 ч:
+   обычные склады — в «Секретариум», личные — владельцу в личку.
 """
 import logging
 import sqlite3
@@ -19,14 +22,18 @@ from typing import Optional
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import config
 
 log = logging.getLogger("warehouses")
 
 DB_PATH: Path = config.DATA_DIR / "legion.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+EXPIRE_HOURS = 50  # через столько часов без обновления склад удаляется игрой
+# (часов с последнего обновления, номер напоминания)
+REMINDERS = [(38, 1), (49, 2), (50, 3)]
 
 STATUSES = {
     "active": ("🟢 Активен", discord.Color.green()),
@@ -34,7 +41,7 @@ STATUSES = {
     "moved": ("🔵 Перемещён", discord.Color.blue()),
     "closed": ("⚫ Закрыт", discord.Color.dark_grey()),
 }
-CATEGORIES = {"general": "📦 Общий", "officer": "🎖️ Офицерский"}
+CATEGORIES = {"general": "📦 Общий", "officer": "🎖️ Офицерский", "personal": "👤 Личный"}
 
 # Права, которые можно выдавать ролям
 ACTIONS = {
@@ -60,6 +67,7 @@ AUDIT_LABELS = {
     "category": "сменил категорию",
     "archive": "архивировал склад",
     "reopen": "вернул склад из архива",
+    "refresh": "отметил обновление склада",
 }
 
 
@@ -133,21 +141,38 @@ class DB:
                 );
                 """
             )
+            c.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', '1')")
+            c.commit()
+            log.info("База складов создана: %s", DB_PATH)
+        if version < 2:
+            # Миграция 1 → 2: время создания в игре, последнее обновление, этап напоминаний.
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(warehouses)")}
+            if "game_created_at" not in cols:
+                c.execute("ALTER TABLE warehouses ADD COLUMN game_created_at INTEGER")
+            if "refreshed_at" not in cols:
+                c.execute("ALTER TABLE warehouses ADD COLUMN refreshed_at INTEGER")
+            if "reminder_stage" not in cols:
+                c.execute("ALTER TABLE warehouses ADD COLUMN reminder_stage INTEGER NOT NULL DEFAULT 0")
+            c.execute("UPDATE warehouses SET game_created_at = created_at WHERE game_created_at IS NULL")
+            c.execute("UPDATE warehouses SET refreshed_at = created_at WHERE refreshed_at IS NULL")
             c.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
             c.commit()
-            log.info("База складов создана: %s (версия схемы %d)", DB_PATH, SCHEMA_VERSION)
+            log.info("База складов обновлена до версии %d", SCHEMA_VERSION)
         if not c.execute("SELECT 1 FROM permissions LIMIT 1").fetchone():
             self.reset_permissions()
 
     # склады
     def create(self, data: dict, created_by: int) -> int:
         now = int(time.time())
+        game_created = data.get("game_created_at") or now
         cur = self.conn.execute(
             "INSERT INTO warehouses (name, owner_id, region, coords, password, purpose, comment, category,"
-            " status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)",
+            " status, created_by, created_at, updated_at, game_created_at, refreshed_at, reminder_stage)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, 0)",
             (
                 data["name"], data["owner_id"], data["region"], data["coords"], data["password"],
                 data["purpose"], data["comment"], data["category"], created_by, now, now,
+                game_created, game_created,
             ),
         )
         self.conn.commit()
@@ -229,13 +254,37 @@ def can_see(member: discord.abc.User, wh: dict) -> bool:
     return wh["category"] != "officer" or is_owner(member, wh) or has(member, "officer")
 
 
+def is_admin(member: discord.abc.User) -> bool:
+    return isinstance(member, discord.Member) and (
+        member.guild_permissions.administrator or member.guild.owner_id == member.id
+    )
+
+
 def can(member: discord.abc.User, wh: dict, action: str) -> bool:
     """Можно ли этому человеку сделать action с этим складом."""
     if not can_see(member, wh):
         return False
-    if action in ("password", "edit", "set_password", "audit") and is_owner(member, wh):
+    if action in ("password", "edit", "set_password", "audit", "refresh") and is_owner(member, wh):
         return True
+    # Пароль личного склада — только владельцу (и администраторам)
+    if wh["category"] == "personal" and action in ("password", "set_password", "refresh"):
+        return is_admin(member)
+    if action == "refresh":
+        return has(member, "password")
     return has(member, action)
+
+
+def allowed_categories(member: discord.abc.User, wh: Optional[dict] = None) -> list[str]:
+    """Какие категории человек может поставить складу."""
+    personal_ok = wh is None or is_owner(member, wh) or is_admin(member)
+    if wh is not None and wh["category"] == "personal" and not personal_ok:
+        return []  # личный склад может перевести только владелец
+    result = ["general"]
+    if has(member, "officer"):
+        result.append("officer")
+    if personal_ok:
+        result.append("personal")
+    return result
 
 
 async def deny(interaction: discord.Interaction, text: str = "⛔ Недостаточно прав для этого действия.") -> None:
@@ -274,6 +323,10 @@ def changes(old: dict, new: dict, labels: dict[str, str]) -> str:
 
 # ---------- карточка склада ----------
 
+def expires_at(wh: dict) -> int:
+    return int(wh["refreshed_at"]) + EXPIRE_HOURS * 3600
+
+
 def card_embed(wh: dict) -> discord.Embed:
     status, color = STATUSES.get(wh["status"], STATUSES["active"])
     e = discord.Embed(title=f"Склад №{wh['id']} · {wh['name']}", color=color)
@@ -285,8 +338,25 @@ def card_embed(wh: dict) -> discord.Embed:
     e.add_field(name="Статус", value=status, inline=True)
     if wh["comment"]:
         e.add_field(name="Комментарий", value=wh["comment"], inline=False)
-    e.add_field(name="Пароль", value="🔒 Выдаётся в личные сообщения по кнопке «Пароль»", inline=False)
-    e.set_footer(text="Обновлено")
+    e.add_field(name="Создан", value=f"<t:{wh['game_created_at']}:f>", inline=True)
+    e.add_field(
+        name="Последнее обновление",
+        value=f"<t:{wh['refreshed_at']}:f>\n<t:{wh['refreshed_at']}:R>",
+        inline=True,
+    )
+    if wh["status"] != "closed":
+        expires = expires_at(wh)
+        if expires <= time.time():
+            value = f"⚠️ Срок истёк <t:{expires}:R>"
+        else:
+            value = f"<t:{expires}:R>"
+        e.add_field(name="Удалится без обновления", value=value, inline=True)
+    if wh["category"] == "personal":
+        pw_text = "🔒 Личный склад — пароль получает только владелец"
+    else:
+        pw_text = "🔒 Выдаётся в личные сообщения по кнопке «Пароль»"
+    e.add_field(name="Пароль", value=pw_text, inline=False)
+    e.set_footer(text="Карточка изменена")
     e.timestamp = datetime.fromtimestamp(wh["updated_at"], timezone.utc)
     return e
 
@@ -299,6 +369,7 @@ OPEN_BUTTONS = [
     ("setpw", "Сменить пароль", "🔄", discord.ButtonStyle.secondary, 1),
     ("status", "Статус", "📊", discord.ButtonStyle.secondary, 1),
     ("log", "Журнал", "📜", discord.ButtonStyle.secondary, 1),
+    ("refresh", "Обновил", "♻️", discord.ButtonStyle.primary, 1),
 ]
 CLOSED_BUTTONS = [
     ("status", "Статус", "📊", discord.ButtonStyle.secondary, 0),
@@ -425,17 +496,18 @@ class WarehouseForm(discord.ui.Modal, title="Новый склад · шаг 1 �
             "owner_id": interaction.user.id,
             "category": "general",
         }
-        view = CreateView(draft, can_officer=has(interaction.user, "officer"))
+        view = CreateView(draft, allowed_categories(interaction.user))
         await interaction.response.send_message(view.summary(), view=view, ephemeral=True)
 
 
 class CreateView(discord.ui.View):
-    def __init__(self, draft: dict, can_officer: bool) -> None:
+    def __init__(self, draft: dict, categories: list[str]) -> None:
         super().__init__(timeout=900)
         self.draft = draft
         self.done = False
-        if not can_officer:
-            self.remove_item(self.category)
+        self.category.options = [
+            discord.SelectOption(label=CATEGORIES[key], value=key) for key in categories
+        ]
 
     def summary(self) -> str:
         return (
@@ -449,14 +521,7 @@ class CreateView(discord.ui.View):
         self.draft["owner_id"] = select.values[0].id
         await interaction.response.edit_message(content=self.summary(), view=self)
 
-    @discord.ui.select(
-        placeholder="Категория: общий склад",
-        options=[
-            discord.SelectOption(label="Общий склад", value="general", emoji="📦"),
-            discord.SelectOption(label="Офицерский склад", value="officer", emoji="🎖️"),
-        ],
-        row=1,
-    )
+    @discord.ui.select(placeholder="Категория: общий склад", options=[discord.SelectOption(label="—")], row=1)
     async def category(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
         self.draft["category"] = select.values[0]
         await interaction.response.edit_message(content=self.summary(), view=self)
@@ -466,13 +531,33 @@ class CreateView(discord.ui.View):
         await interaction.response.send_modal(PasswordModal(create_view=self))
 
 
+def parse_hours_ago(text: str) -> Optional[float]:
+    """«5», «1,5», «3ч» → часы. Пусто → 0. Ошибка → None."""
+    text = text.strip().lower().replace(",", ".").rstrip("чh").strip()
+    if not text:
+        return 0.0
+    try:
+        hours = float(text)
+    except ValueError:
+        return None
+    return hours if 0 <= hours <= 24 * 30 else None
+
+
 class PasswordModal(discord.ui.Modal):
     password = discord.ui.TextInput(label="Пароль склада", max_length=64)
+    created_ago = discord.ui.TextInput(
+        label="Создан в игре примерно … часов назад",
+        placeholder="Пусто — только что. Например: 5 или 1,5",
+        max_length=10,
+        required=False,
+    )
 
     def __init__(self, *, create_view: Optional[CreateView] = None, wid: Optional[int] = None) -> None:
         super().__init__(title="Новый склад · шаг 3 из 3" if create_view else "Смена пароля склада")
         self.create_view = create_view
         self.wid = wid
+        if create_view is None:
+            self.remove_item(self.created_ago)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if self.create_view is not None:
@@ -489,8 +574,20 @@ class PasswordModal(discord.ui.Modal):
         if not has(user, "create"):
             await deny(interaction)
             return
-        draft = dict(view.draft, password=self.password.value.strip())
-        if draft["category"] == "officer" and not has(user, "officer"):
+        hours = parse_hours_ago(self.created_ago.value)
+        if hours is None:
+            await interaction.response.send_message(
+                "Не понял, сколько часов назад создан склад. Напишите число, например 5 или 1,5, "
+                "и снова нажмите «Задать пароль и сохранить».",
+                ephemeral=True,
+            )
+            return
+        draft = dict(
+            view.draft,
+            password=self.password.value.strip(),
+            game_created_at=int(time.time() - hours * 3600),
+        )
+        if draft["category"] not in allowed_categories(user):
             draft["category"] = "general"
 
         view.done = True
@@ -499,7 +596,11 @@ class PasswordModal(discord.ui.Modal):
 
         wid = db.create(draft, created_by=user.id)
         wh = db.get(wid)
-        await audit(interaction.client, user, wh, "create", f"{CATEGORIES[wh['category']]}, {wh['region']}" + (f" / {wh['coords']}" if wh["coords"] else ""))
+        await audit(
+            interaction.client, user, wh, "create",
+            f"{CATEGORIES[wh['category']]}, {wh['region']}" + (f" / {wh['coords']}" if wh["coords"] else "")
+            + f", создан в игре <t:{wh['game_created_at']}:f>",
+        )
         error = await publish_card(interaction.client, wid)
         wh = db.get(wid)
         text = f"✅ Склад №{wid} «{wh['name']}» зарегистрирован."
@@ -633,11 +734,10 @@ class StatusView(discord.ui.View):
         else:
             self.remove_item(self.status_select)
 
-        if has(member, "officer") and wh["status"] != "closed":
+        categories = [c for c in allowed_categories(member, wh) if c != wh["category"]]
+        if can_edit and categories and wh["status"] != "closed":
             self.category_select.options = [
-                discord.SelectOption(label=label, value=key)
-                for key, label in CATEGORIES.items()
-                if key != wh["category"]
+                discord.SelectOption(label=CATEGORIES[key], value=key) for key in categories
             ]
         else:
             self.remove_item(self.category_select)
@@ -678,10 +778,10 @@ class StatusView(discord.ui.View):
     @discord.ui.select(placeholder="Сменить категорию", options=[discord.SelectOption(label="—")])
     async def category_select(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
         wh = db.get(self.wid)
-        if wh is None or not has(interaction.user, "officer"):
+        new = select.values[0]
+        if wh is None or not can(interaction.user, wh, "edit") or new not in allowed_categories(interaction.user, wh):
             await deny(interaction)
             return
-        new = select.values[0]
         db.update(wh["id"], category=new)
         await interaction.response.edit_message(content=f"✅ Категория: {CATEGORIES[new]}", view=None)
         await audit(interaction.client, interaction.user, wh, "category", f"{CATEGORIES[wh['category']]} → {CATEGORIES[new]}")
@@ -762,11 +862,69 @@ async def on_card_button(interaction: discord.Interaction, action: str, wid: int
             ephemeral=True,
         )
 
+    elif action == "refresh":
+        if wh["status"] == "closed" or not can(member, wh, "refresh"):
+            await deny(interaction)
+            return
+        now = int(time.time())
+        db.update(wh["id"], refreshed_at=now, reminder_stage=0)
+        await interaction.response.send_message(
+            f"♻️ Отмечено: склад №{wh['id']} обновлён <t:{now}:f>. "
+            f"Следующий срок — <t:{now + EXPIRE_HOURS * 3600}:f>.",
+            ephemeral=True,
+        )
+        await audit(interaction.client, member, wh, "refresh")
+        error = await publish_card(interaction.client, wh["id"])
+        if error:
+            await interaction.followup.send(error, ephemeral=True)
+
     elif action == "log":
         if not can(member, wh, "audit"):
             await deny(interaction)
             return
         await interaction.response.send_message(embed=history_embed(wh), ephemeral=True)
+
+
+# ---------- напоминания об обновлении ----------
+
+async def send_reminder(client: discord.Client, wh: dict, stage: int) -> None:
+    expires = expires_at(wh)
+    place = wh["region"] + (f" / {wh['coords']}" if wh["coords"] else "")
+    title = f"склад №{wh['id']} «{wh['name']}» ({place})"
+    if stage >= 3:
+        text = (
+            f"❗ {title} не обновлялся {EXPIRE_HOURS} часов — вероятно, игра его уже удалила.\n"
+            "Если склад цел, обновите его в игре и нажмите «Обновил». Иначе закройте карточку (Статус → Закрыт)."
+        )
+    else:
+        text = (
+            f"⏰ Нужно обновить {title}!\n"
+            f"Без обновления удалится <t:{expires}:R> (<t:{expires}:f>). "
+            "После обновления в игре нажмите «Обновил»."
+        )
+    if jump_url(wh):
+        text += f"\nКарточка: {jump_url(wh)}"
+    view = discord.ui.View(timeout=None)
+    view.add_item(CardButton("refresh", wh["id"], "Обновил", "♻️", discord.ButtonStyle.success))
+
+    if wh["category"] == "personal":
+        try:
+            owner = client.get_user(wh["owner_id"]) or await client.fetch_user(wh["owner_id"])
+            await owner.send(text, view=view)
+            log.info("Напоминание %d о складе %s отправлено владельцу в личку", stage, wh["id"])
+            return
+        except discord.HTTPException:
+            log.info("Личка владельца склада %s закрыта — пишу в Секретариум", wh["id"])
+
+    channel = client.get_channel(config.SECRETARIUM_CHANNEL_ID) or await client.fetch_channel(
+        config.SECRETARIUM_CHANNEL_ID
+    )
+    await channel.send(
+        f"<@{wh['owner_id']}> {text}",
+        view=view,
+        allowed_mentions=discord.AllowedMentions(users=True),
+    )
+    log.info("Напоминание %d о складе %s отправлено в Секретариум", stage, wh["id"])
 
 
 # ---------- команды ----------
@@ -794,6 +952,33 @@ class Warehouses(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+
+    async def cog_load(self) -> None:
+        self.reminders.start()
+
+    async def cog_unload(self) -> None:
+        self.reminders.cancel()
+
+    @tasks.loop(minutes=5)
+    async def reminders(self) -> None:
+        now = time.time()
+        for wh in db.all():
+            if wh["status"] == "closed" or not wh["refreshed_at"]:
+                continue
+            hours = (now - wh["refreshed_at"]) / 3600
+            stage = max((n for h, n in REMINDERS if hours >= h), default=0)
+            if stage > wh["reminder_stage"]:
+                db.update(wh["id"], touch=False, reminder_stage=stage)
+                try:
+                    await send_reminder(self.bot, wh, stage)
+                except Exception:
+                    log.exception("Не удалось отправить напоминание о складе %s", wh["id"])
+                if stage == 3:
+                    await publish_card(self.bot, wh["id"])  # пометить «срок истёк»
+
+    @reminders.before_loop
+    async def before_reminders(self) -> None:
+        await self.bot.wait_until_ready()
 
     @sklad.command(name="добавить", description="Зарегистрировать новый склад")
     async def add(self, interaction: discord.Interaction) -> None:
@@ -861,8 +1046,9 @@ class Warehouses(commands.Cog):
             if w["coords"]:
                 line += f" ({w['coords']})"
             line += f"\n{STATUSES[w['status']][0]} · {w['purpose'] or '—'} · <@{w['owner_id']}>"
-            if w["category"] == "officer":
-                line += " · 🎖️"
+            line += f" · ♻️ <t:{w['refreshed_at']}:R>"
+            if w["category"] in ("officer", "personal"):
+                line += " · " + CATEGORIES[w["category"]].split()[0]
             if jump_url(w):
                 line += f" · [карточка]({jump_url(w)})"
             lines.append(line)
@@ -901,7 +1087,8 @@ class Warehouses(commands.Cog):
             title="🔐 Права на склады",
             description="\n\n".join(lines)
             + "\n\n*Администраторы сервера могут всё. Владелец склада может изменять свой склад, "
-            "менять и получать его пароль и смотреть его журнал.*",
+            "менять и получать его пароль и смотреть его журнал. Пароль личного склада получает "
+            "только владелец.*",
             color=discord.Color.dark_red(),
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
