@@ -15,7 +15,7 @@
 
 Представления к повышению: офицер предлагает одного или нескольких кандидатов в звание,
 офицеры голосуют «За»/«Против», Принцепс утверждает (всех или часть). Бот меняет роли
-и публикует приказ в чате Легиона.
+и публикует приказ в «Консулате».
 Данные — в отдельном файле data/senate.db.
 """
 import logging
@@ -741,13 +741,13 @@ class PromoDecisionView(discord.ui.View):
             order = (f"📜 **ПРИКАЗ №{self.pid}**\n\nИменем Сената и Принцепса "
                      f"{', '.join(f'<@{u}>' for u in done)} {'возводятся' if len(done) > 1 else 'возводится'} "
                      f"в звание <@&{p['rank_id']}>.\n\nЗа: {p['reason'][:500]}\n\n*Senatus Populusque Legionis*")
-            if config.LEGION_CHAT_CHANNEL_ID:
+            target = config.CONSULATE_CHANNEL_ID or config.LEGION_CHAT_CHANNEL_ID
+            if target:
                 try:
-                    channel = (interaction.client.get_channel(config.LEGION_CHAT_CHANNEL_ID)
-                               or await interaction.client.fetch_channel(config.LEGION_CHAT_CHANNEL_ID))
+                    channel = interaction.client.get_channel(target) or await interaction.client.fetch_channel(target)
                     await channel.send(order[:2000], allowed_mentions=discord.AllowedMentions(users=True))
                 except discord.HTTPException:
-                    problems.append("приказ в чат Легиона не отправлен")
+                    problems.append("приказ не отправлен: проверьте права бота в «Консулате»")
         from cogs.consulate import archive
         await archive(interaction.client,
                       f"🎖️ <t:{int(time.time())}:f> · {interaction.user.mention} рассмотрел представление №{self.pid} "

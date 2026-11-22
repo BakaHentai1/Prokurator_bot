@@ -58,6 +58,9 @@ except ValueError:
     _missing.append("TZ_OFFSET (должно быть число, например 3 для МСК)")
     TZ_OFFSET = 3.0
 
+# «Консулат» — объявления (приказы о повышении)
+CONSULATE_CHANNEL_ID = _int("CONSULATE_CHANNEL_ID", required=False)
+
 # «Сенат» — закрытый канал офицеров (предупреждения о чёрном списке)
 SENATE_CHANNEL_ID = _int("SENATE_CHANNEL_ID", required=False)
 
