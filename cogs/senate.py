@@ -900,6 +900,22 @@ class SenatePanel(discord.ui.View):
                                 description="\n\n".join(lines)[:4000], color=discord.Color.dark_gold()),
             ephemeral=True)
 
+    @discord.ui.button(label="Новое поручение", emoji="📌", style=discord.ButtonStyle.success,
+                       custom_id="sen:task", row=3)
+    async def new_task(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        from cogs.tasks import start_task
+        await start_task(interaction)
+
+    @discord.ui.button(label="Поручения", emoji="🗂️", style=discord.ButtonStyle.secondary, custom_id="sen:tasks",
+                       row=3)
+    async def task_list(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not is_officer(interaction.user):
+            await deny(interaction)
+            return
+        from cogs import tasks
+        await interaction.response.send_message(embed=tasks.list_embed(tasks.db.open_tasks(), "🗂️ Открытые поручения"),
+                                                ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
     @discord.ui.button(label="Кадры", emoji="👥", style=discord.ButtonStyle.primary, custom_id="sen:staff", row=2)
     async def staff(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not is_officer(interaction.user):
@@ -953,6 +969,9 @@ def panel_embed() -> discord.Embed:
             "Принцепс утверждает, бот меняет роли и публикует приказ.\n"
             "📋 **Открытые представления** — что сейчас на рассмотрении.\n"
             "👥 **Кадры** — состав по званиям, отпуска, неактивные 14+ дней.\n"
+            "📌 **Новое поручение** — выдают Принцепс, Консулы и Сенаторы; исполнителю приходит личка, "
+            "напоминание за сутки и при просрочке.\n"
+            "🗂️ **Поручения** — открытые поручения и сроки. Свои — `/мои_поручения`.\n"
             "📊 **Доклад за неделю** — сводка (приходит сам каждый понедельник в 10:00).\n\n"
             "**Права:** смотреть — все офицеры; выговоры — Принцепс, Консулы, Легаты; "
             "пополнять чёрный список — Принцепс, Консулы, Легаты, Центурионы; заметки, снятие выговоров "

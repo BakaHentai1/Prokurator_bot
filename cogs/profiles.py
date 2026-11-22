@@ -345,6 +345,12 @@ def gather(user_id: int) -> dict:
                                           (user_id,)).fetchone()[0]
     except Exception:
         log.exception("Профиль: склады")
+    try:
+        from cogs import tasks as task_mod
+        if task_mod.db is not None:
+            s["tasks_done"] = task_mod.db.done_count(user_id)
+    except Exception:
+        log.exception("Профиль: поручения")
     s["thanks"], s["thanks_recent"] = db.thanks_to(user_id)
     s["awards"] = db.awards(user_id)
     s["voice_week"] = db.voice_hours(user_id, 7)
@@ -496,6 +502,8 @@ def profile_embed(member: discord.Member, viewer: discord.abc.User) -> discord.E
         made.append(f"Выборов объявил: {s['elect_made']}")
     if s.get("elect_ran"):
         made.append(f"Выдвигался на выборах: {s['elect_ran']}")
+    if s.get("tasks_done"):
+        made.append(f"Поручений выполнил: {s['tasks_done']}")
     if made:
         e.add_field(name="📜 Вклад в Консулат", value="\n".join(made), inline=True)
 

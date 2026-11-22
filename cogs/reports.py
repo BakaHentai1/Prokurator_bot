@@ -237,7 +237,12 @@ def weekly_embed(guild: discord.Guild, days: int = 7) -> discord.Embed:
         promos = _q(c, "SELECT p.rank_id, pc.user_id FROM promotions p JOIN promo_candidates pc ON pc.promo_id = p.id "
                        "WHERE pc.result = 'approved' AND p.decided_ts >= ?", (since,))
         bl = _q(c, "SELECT COUNT(*) FROM blacklist WHERE active = 1 AND ts >= ?", (since,))[0][0]
+        done = _q(c, "SELECT COUNT(*) FROM tasks WHERE status = 'done' AND closed_at >= ?", (since,))
+        late = _q(c, "SELECT COUNT(*) FROM tasks WHERE status = 'open' AND deadline IS NOT NULL AND deadline < ?",
+                  (now,))
         text = f"Выговоров: {warns}\nВ чёрный список: {bl}"
+        if done or late:
+            text += f"\nПоручений выполнено: {done[0][0] if done else 0} · просрочено: {late[0][0] if late else 0}"
         if promos:
             text += "\nПовышены: " + ", ".join(f"<@{u}> → <@&{r}>" for r, u in promos[:8])
         e.add_field(name="🎖️ Сенат", value=text[:1024], inline=False)
