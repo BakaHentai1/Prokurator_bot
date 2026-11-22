@@ -74,6 +74,7 @@ class DB:
                 ts       INTEGER NOT NULL,
                 PRIMARY KEY (order_id, user_id)
             );
+            CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS order_log (
                 id       INTEGER PRIMARY KEY AUTOINCREMENT,
                 order_id INTEGER NOT NULL,
@@ -144,6 +145,21 @@ class DB:
 
 
 db: Optional[DB] = None
+
+
+def prefecture_channel_id() -> Optional[int]:
+    """Канал Префектуры: где опубликована панель, иначе — где последний раз создавали заказ/MPF/объект."""
+    row = db.conn.execute("SELECT value FROM meta WHERE key = 'channel_id'").fetchone()
+    if row:
+        return int(row[0])
+    for table in ("orders", "mpf_jobs", "facilities", "gatherings"):
+        try:
+            r = db.conn.execute(f"SELECT channel_id FROM {table} ORDER BY id DESC LIMIT 1").fetchone()
+        except sqlite3.Error:
+            continue
+        if r:
+            return int(r[0])
+    return None
 
 
 # ---------- права ----------
@@ -738,6 +754,26 @@ class Prefecture(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
+        """Короткое оповещение в Префектуре, когда кто-то становится Фабрумом."""
+        if not config.FABRUM_ROLE_ID or after.guild.id != config.GUILD_ID:
+            return
+        had = any(r.id == config.FABRUM_ROLE_ID for r in before.roles)
+        has = any(r.id == config.FABRUM_ROLE_ID for r in after.roles)
+        if had or not has:
+            return
+        channel_id = prefecture_channel_id()
+        channel = self.bot.get_channel(channel_id) if channel_id else None
+        if channel is None:
+            return
+        try:
+            await channel.send(f"🔧 {after.mention} повышен до <@&{config.FABRUM_ROLE_ID}>! "
+                               "Добро пожаловать в Префектуру — заказы и MPF ждут.",
+                               allowed_mentions=discord.AllowedMentions(users=True))
+        except discord.HTTPException as e:
+            log.error("Не удалось оповестить о новом Фабруме: %s", e)
+
     async def cog_load(self) -> None:
         self.ticker.start()
         self.mpf_ticker.start()
@@ -801,6 +837,8 @@ class Prefecture(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             message = await interaction.channel.send(embed=panel_embed(), view=PrefecturePanel())
+            db.conn.execute("INSERT OR REPLACE INTO meta VALUES ('channel_id', ?)", (str(interaction.channel.id),))
+            db.conn.commit()
         except discord.HTTPException as e:
             await interaction.followup.send(f"Не удалось опубликовать панель: {e.text or e}", ephemeral=True)
             return
