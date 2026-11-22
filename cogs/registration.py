@@ -257,17 +257,6 @@ class WardenModal(discord.ui.Modal, title="Заявка вардена"):
         max_length=100,
         required=False,
     )
-    purpose = discord.ui.TextInput(
-        label="Цель визита на сервер",
-        style=discord.TextStyle.paragraph,
-        placeholder="Переговоры, совместные ивенты, обмен…",
-        max_length=500,
-    )
-    contact = discord.ui.TextInput(
-        label="Кто из Легиона вас пригласил",
-        max_length=200,
-        required=False,
-    )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await submit_application(
@@ -277,8 +266,6 @@ class WardenModal(discord.ui.Modal, title="Заявка вардена"):
             fields=[
                 ("Ник в Foxhole", self.nickname.value, True),
                 ("Полк / клан", self.unit.value, True),
-                ("Цель визита", self.purpose.value, False),
-                ("Пригласил", self.contact.value, False),
             ],
             nickname=self.nickname.value,
         )
