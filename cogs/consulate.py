@@ -520,7 +520,7 @@ class ConsulatePanel(discord.ui.View):
     async def new_op(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         from cogs.operations import OperationForm, can_create_op  # модуль операций загружается после этого
         if not can_create_op(interaction.user):
-            await interaction.response.send_message("⛔ Операции объявляют Принцепс, Консулы и Сенат.", ephemeral=True)
+            await interaction.response.send_message("⛔ Операции объявляют Принцепс, Консулы, Сенат и Легаты.", ephemeral=True)
             return
         await interaction.response.send_modal(OperationForm())
 

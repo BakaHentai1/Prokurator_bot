@@ -68,8 +68,9 @@ def build_help(member: discord.abc.User) -> discord.Embed:
     ]
     if officer:
         cons.append("👁️ «Кто ознакомился» под эдиктами.")
-    if command_staff:
+    if operations.can_create_op(member):
         cons.append("⚔️ `/операция` — объявить операцию (или кнопка на панели Консулата).")
+    if command_staff:
         cons.append("🗳️ `/голосование` — тайное или открытое, итоги публикуются сами.")
         cons.append("📜 `/эдикт`, `/эдикт_изменить`, `/эдикт_отменить` — эдикты, можно по расписанию.")
         cons.append("🏛️ `/выборы` — выдвижение, тайное голосование, итоги; роль выдаётся после утверждения Принцепсом.")
