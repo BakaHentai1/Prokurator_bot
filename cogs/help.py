@@ -90,6 +90,14 @@ def build_help(member: discord.abc.User) -> discord.Embed:
         prof.append("🏖️ `/отпуска` — кто сейчас отсутствует.")
     e.add_field(name="🪪 Профиль", value="\n".join(prof), inline=False)
 
+    if officer:
+        e.add_field(
+            name="🏛️ Сенат (офицеры)",
+            value=f"Панель в {channel(config.SENATE_CHANNEL_ID, '«Сенате»')}: 📂 личное дело, ⛔ чёрный список, "
+                  "⚠️ выговоры.\n`/дело @человек` или долгое нажатие → Приложения → «Личное дело».",
+            inline=False,
+        )
+
     if admin:
         e.add_field(
             name="⚙️ Служебное",

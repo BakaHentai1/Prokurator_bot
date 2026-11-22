@@ -183,6 +183,11 @@ async def submit_application(
     }
     save_data(data)
     log.info("Новая заявка (%s) от %s (%s)", kind, user, user.id)
+    try:
+        from cogs.senate import alert_application
+        await alert_application(interaction.client, user, nickname, message)
+    except Exception:
+        log.exception("Проверка чёрного списка не удалась")
     await delete_greeting(interaction.client, user.id)
 
     await interaction.followup.send(

@@ -20,6 +20,7 @@ QUESTIONS = [
     ("OFFICER_WAREHOUSE_CHANNEL_ID", "ID закрытого канала офицерских складов (Enter — пропустить)", False, True),
     ("AUDIT_CHANNEL_ID", "ID канала «Инвентариум» (журнал складов и резервные копии)", False, True),
     ("ARCHIVE_CHANNEL_ID", "ID канала «Архивариум» (журнал Консулата)", False, True),
+    ("SENATE_CHANNEL_ID", "ID канала «Сенат» (закрытый, для офицеров)", False, True),
     ("LEGION_CHAT_CHANNEL_ID", "ID чата Легиона (напоминания об операциях)", False, True),
     ("TZ_OFFSET", "Часовой пояс для времени операций, часы от UTC (МСК — 3, Алматы — 5)", False, "float"),
     ("PRINCEPS_ROLE_ID", "ID роли Принцепса", False, True),
