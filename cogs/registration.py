@@ -179,6 +179,7 @@ async def submit_application(
         "message_id": message.id,
         "nickname": nickname,
         "submitted_at": datetime.now(timezone.utc).isoformat(),
+        "fields": {name: value for name, value, _ in fields if value},
     }
     save_data(data)
     log.info("Новая заявка (%s) от %s (%s)", kind, user, user.id)
@@ -463,6 +464,7 @@ class ReviewView(discord.ui.View):
 
         app["status"] = "approved"
         app["reviewed_by"] = interaction.user.id
+        app["reviewed_at"] = datetime.now(timezone.utc).isoformat()
         save_data(data)
 
         welcome = WELCOME_TEXT.get(kind, WELCOME_TEXT["member"]).format(name=member.display_name)

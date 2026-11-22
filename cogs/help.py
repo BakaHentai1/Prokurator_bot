@@ -78,6 +78,13 @@ def build_help(member: discord.abc.User) -> discord.Embed:
         cons.append("⚙️ `/консулат` — опубликовать и закрепить панель Консулата.")
     e.add_field(name="🏛️ Консулат", value="\n".join(cons), inline=False)
 
+    e.add_field(
+        name="🪪 Профиль",
+        value="`/профиль` — ваш профиль (кнопка «Изменить профиль»), `/профиль @человек` — чужой. "
+              "Или долгое нажатие на человека → Приложения → «Профиль».",
+        inline=False,
+    )
+
     if admin:
         e.add_field(
             name="⚙️ Служебное",
