@@ -68,6 +68,7 @@ AUDIT_LABELS = {
     "archive": "архивировал склад",
     "reopen": "вернул склад из архива",
     "refresh": "отметил обновление склада",
+    "war_reset": "закрыл склад при сбросе войны",
 }
 
 
@@ -990,6 +991,135 @@ class PanelView(discord.ui.View):
         )
         await send_list(interaction, items, "👤 Ваши склады", "У вас пока нет складов.")
 
+    @discord.ui.button(label="Сброс войны", emoji="⚠️", style=discord.ButtonStyle.danger, custom_id="whp:reset", row=1)
+    async def reset(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not can_reset(interaction.user):
+            await deny(interaction, "⛔ Сброс войны доступен только Принцепсу.")
+            return
+        await interaction.response.send_modal(WarResetModal())
+
+
+# ---------- сброс войны ----------
+
+def can_reset(member: discord.abc.User) -> bool:
+    """Сброс войны — только владелец сервера или Принцепс."""
+    if not isinstance(member, discord.Member):
+        return False
+    if member.guild.owner_id == member.id:
+        return True
+    return bool(config.PRINCEPS_ROLE_ID) and any(r.id == config.PRINCEPS_ROLE_ID for r in member.roles)
+
+
+class WarResetModal(discord.ui.Modal, title="⚠️ Сброс войны"):
+    war = discord.ui.TextInput(label="Номер новой войны (необязательно)", max_length=10, required=False,
+                               placeholder="Например: 128")
+    confirm = discord.ui.TextInput(label="Для подтверждения напишите: СБРОС", max_length=10)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not can_reset(interaction.user):
+            await deny(interaction)
+            return
+        if self.confirm.value.strip().upper() != "СБРОС":
+            await interaction.response.send_message("Сброс отменён: подтверждение не совпало.", ephemeral=True)
+            return
+        open_count = sum(1 for w in db.all() if w["status"] != "closed")
+        view = WarResetChoice(self.war.value.strip().lstrip("№#"))
+        await interaction.response.send_message(
+            f"⚠️ Будут закрыты все открытые склады: **{open_count}**. Перед этим бот сделает резервную копию.\n"
+            "Что сделать с карточками в канале?",
+            view=view, ephemeral=True,
+        )
+
+
+class WarResetChoice(discord.ui.View):
+    def __init__(self, war: str) -> None:
+        super().__init__(timeout=300)
+        self.war = war
+        self.done = False
+
+    async def _run(self, interaction: discord.Interaction, delete_cards: bool) -> None:
+        if self.done or not can_reset(interaction.user):
+            await deny(interaction)
+            return
+        self.done = True
+        self.stop()
+        await interaction.response.edit_message(content="⏳ Сбрасываю склады… Это может занять минуту.", view=None)
+        client = interaction.client
+        user = interaction.user
+
+        # 1. Резервная копия до изменений
+        backup_note = ""
+        try:
+            from cogs.backup import send_backup
+            if config.AUDIT_CHANNEL_ID:
+                await send_backup(client, f"перед сбросом войны ({user})")
+                backup_note = "резервная копия отправлена в «Инвентариум»"
+        except Exception as e:  # копия не должна мешать сбросу, но сообщим
+            log.error("Не удалось сделать копию перед сбросом: %s", e)
+            backup_note = "⚠️ резервную копию сделать не удалось"
+
+        # 2. Закрываем склады
+        label = f"война №{self.war}" if self.war else "новая война"
+        closed = 0
+        failed = 0
+        for wh in db.all():
+            if wh["status"] == "closed":
+                continue
+            db.update(wh["id"], status="closed")
+            db.log(user.id, wh["id"], "war_reset", label)
+            closed += 1
+            if delete_cards and wh["message_id"] and wh["channel_id"]:
+                channel = client.get_channel(wh["channel_id"])
+                try:
+                    if channel is not None:
+                        await channel.get_partial_message(wh["message_id"]).delete()
+                except discord.NotFound:
+                    pass
+                except discord.HTTPException:
+                    failed += 1
+                db.update(wh["id"], touch=False, message_id=None)
+            elif not delete_cards:
+                if await publish_card(client, wh["id"]):
+                    failed += 1
+
+        if self.war:
+            db.conn.execute("INSERT OR REPLACE INTO meta VALUES ('war', ?)", (self.war,))
+            db.conn.commit()
+
+        # 3. Журнал
+        summary = (f"⚠️ <t:{int(time.time())}:f> · {user.mention} выполнил **сброс войны** ({label}): "
+                   f"закрыто складов — {closed}, карточки {'удалены' if delete_cards else 'оставлены'}.")
+        if config.AUDIT_CHANNEL_ID:
+            channel = client.get_channel(config.AUDIT_CHANNEL_ID)
+            if channel is not None:
+                try:
+                    await channel.send(summary, allowed_mentions=discord.AllowedMentions.none())
+                except discord.HTTPException:
+                    pass
+        log.info("Сброс войны (%s): закрыто %d складов (%s)", label, closed, user)
+
+        text = f"✅ Сброс выполнен ({label}): закрыто складов — **{closed}**."
+        if backup_note:
+            text += f"\n💾 {backup_note}."
+        if failed:
+            text += f"\n⚠️ Не удалось обработать карточек: {failed} (проверьте права бота в канале)."
+        text += "\nДанные складов сохранены в базе и журнале."
+        await interaction.edit_original_response(content=text)
+
+    @discord.ui.button(label="Закрыть и удалить карточки", emoji="🗑️", style=discord.ButtonStyle.danger)
+    async def delete(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._run(interaction, delete_cards=True)
+
+    @discord.ui.button(label="Закрыть, карточки оставить", emoji="📦", style=discord.ButtonStyle.secondary)
+    async def keep(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._run(interaction, delete_cards=False)
+
+    @discord.ui.button(label="Отмена", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.done = True
+        self.stop()
+        await interaction.response.edit_message(content="Сброс отменён.", view=None)
+
 
 def panel_embed() -> discord.Embed:
     return discord.Embed(
@@ -998,7 +1128,8 @@ def panel_embed() -> discord.Embed:
             "Учёт складов Легиона.\n\n"
             "➕ **Добавить склад** — зарегистрировать новый склад.\n"
             "📋 **Все склады** — список складов, доступных вам.\n"
-            "👤 **Мои склады** — склады, где вы владелец, включая личные.\n\n"
+            "👤 **Мои склады** — склады, где вы владелец, включая личные.\n"
+            "⚠️ **Сброс войны** — закрыть все склады в конце войны (только Принцепс).\n\n"
             "Пароли выдаются только в личные сообщения кнопкой «🔑 Пароль» на карточке склада. "
             "После обновления склада в игре нажмите «♻️ Обновил».\n\n"
             "*Senatus Populusque Legionis*"
