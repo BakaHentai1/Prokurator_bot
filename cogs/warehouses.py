@@ -68,7 +68,7 @@ AUDIT_LABELS = {
     "archive": "архивировал склад",
     "reopen": "вернул склад из архива",
     "refresh": "отметил обновление склада",
-    "war_reset": "закрыл склад при сбросе войны",
+    "war_reset": "закрыл склад при сбросе складов",
 }
 
 
@@ -991,10 +991,10 @@ class PanelView(discord.ui.View):
         )
         await send_list(interaction, items, "👤 Ваши склады", "У вас пока нет складов.")
 
-    @discord.ui.button(label="Сброс войны", emoji="⚠️", style=discord.ButtonStyle.danger, custom_id="whp:reset", row=1)
+    @discord.ui.button(label="Сброс складов", emoji="⚠️", style=discord.ButtonStyle.danger, custom_id="whp:reset", row=1)
     async def reset(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not can_reset(interaction.user):
-            await deny(interaction, "⛔ Сброс войны доступен только Принцепсу.")
+            await deny(interaction, "⛔ Сброс складов доступен только Принцепсу.")
             return
         await interaction.response.send_modal(WarResetModal())
 
@@ -1010,7 +1010,7 @@ def can_reset(member: discord.abc.User) -> bool:
     return bool(config.PRINCEPS_ROLE_ID) and any(r.id == config.PRINCEPS_ROLE_ID for r in member.roles)
 
 
-class WarResetModal(discord.ui.Modal, title="⚠️ Сброс войны"):
+class WarResetModal(discord.ui.Modal, title="⚠️ Сброс складов"):
     war = discord.ui.TextInput(label="Номер новой войны (необязательно)", max_length=10, required=False,
                                placeholder="Например: 128")
     confirm = discord.ui.TextInput(label="Для подтверждения напишите: СБРОС", max_length=10)
@@ -1052,7 +1052,7 @@ class WarResetChoice(discord.ui.View):
         try:
             from cogs.backup import send_backup
             if config.AUDIT_CHANNEL_ID:
-                await send_backup(client, f"перед сбросом войны ({user})")
+                await send_backup(client, f"перед сбросом складов ({user})")
                 backup_note = "резервная копия отправлена в «Инвентариум»"
         except Exception as e:  # копия не должна мешать сбросу, но сообщим
             log.error("Не удалось сделать копию перед сбросом: %s", e)
@@ -1087,7 +1087,7 @@ class WarResetChoice(discord.ui.View):
             db.conn.commit()
 
         # 3. Журнал
-        summary = (f"⚠️ <t:{int(time.time())}:f> · {user.mention} выполнил **сброс войны** ({label}): "
+        summary = (f"⚠️ <t:{int(time.time())}:f> · {user.mention} выполнил **сброс складов** ({label}): "
                    f"закрыто складов — {closed}, карточки {'удалены' if delete_cards else 'оставлены'}.")
         if config.AUDIT_CHANNEL_ID:
             channel = client.get_channel(config.AUDIT_CHANNEL_ID)
@@ -1129,7 +1129,7 @@ def panel_embed() -> discord.Embed:
             "➕ **Добавить склад** — зарегистрировать новый склад.\n"
             "📋 **Все склады** — список складов, доступных вам.\n"
             "👤 **Мои склады** — склады, где вы владелец, включая личные.\n"
-            "⚠️ **Сброс войны** — закрыть все склады в конце войны (только Принцепс).\n\n"
+            "⚠️ **Сброс складов** — закрыть все склады в конце войны (только Принцепс).\n\n"
             "Пароли выдаются только в личные сообщения кнопкой «🔑 Пароль» на карточке склада. "
             "После обновления склада в игре нажмите «♻️ Обновил».\n\n"
             "*Senatus Populusque Legionis*"
