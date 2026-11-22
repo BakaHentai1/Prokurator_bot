@@ -90,6 +90,18 @@ def build_help(member: discord.abc.User) -> discord.Embed:
         prof.append("🏖️ `/отпуска` — кто сейчас отсутствует.")
     e.add_field(name="🪪 Профиль", value="\n".join(prof), inline=False)
 
+    try:
+        from cogs import prefecture
+        if prefecture.is_worker(member):
+            e.add_field(
+                name="🏭 Префектура",
+                value="`/заказ` или «➕ Новый заказ» на панели — производственный заказ; на карточке: "
+                      "🙋 Беру → 🏭 В производстве → 🚚 Отправлено → ✅ Доставлено.",
+                inline=False,
+            )
+    except Exception:
+        pass
+
     if officer:
         e.add_field(
             name="🏛️ Сенат (офицеры)",

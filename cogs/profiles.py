@@ -346,6 +346,12 @@ def gather(user_id: int) -> dict:
     except Exception:
         log.exception("Профиль: склады")
     try:
+        from cogs import prefecture
+        if prefecture.db is not None:
+            s["orders_done"] = prefecture.db.delivered_count(user_id)
+    except Exception:
+        log.exception("Профиль: заказы")
+    try:
         from cogs import tasks as task_mod
         if task_mod.db is not None:
             s["tasks_done"] = task_mod.db.done_count(user_id)
@@ -394,6 +400,12 @@ def achievements(member: discord.Member, s: dict, joined_legion: Optional[int]) 
     for limit, badge in ((100, "🚚 Хранитель складов: 100 обновлений"), (50, "🚚 Логист: 50 обновлений"),
                          (10, "🚚 10 обновлений складов")):
         if ref >= limit:
+            badges.append(badge)
+            break
+    done = s.get("orders_done", 0)
+    for limit, badge in ((100, "🏭 Префект производства: 100 заказов"), (50, "🏭 Мастер цеха: 50 заказов"),
+                         (10, "🏭 10 выполненных заказов")):
+        if done >= limit:
             badges.append(badge)
             break
     if s.get("ops_led", 0) >= 5:
@@ -478,10 +490,11 @@ def profile_embed(member: discord.Member, viewer: discord.abc.User) -> discord.E
         if signed or s.get("ops_came") or s.get("ops_led"):
             e.add_field(name="⚔️ Операции", value=ops, inline=False)
 
-    if s.get("wh_created") or s.get("wh_refreshes"):
-        e.add_field(name="🚚 Логистика",
-                    value=f"Складов создал: {s.get('wh_created', 0)}\nОбновлений складов: {s.get('wh_refreshes', 0)}",
-                    inline=True)
+    if s.get("wh_created") or s.get("wh_refreshes") or s.get("orders_done"):
+        logi = f"Складов создал: {s.get('wh_created', 0)}\nОбновлений складов: {s.get('wh_refreshes', 0)}"
+        if s.get("orders_done"):
+            logi += f"\nЗаказов выполнил: {s['orders_done']}"
+        e.add_field(name="🚚 Логистика и производство", value=logi, inline=True)
 
     civic = []
     if "votes" in s:

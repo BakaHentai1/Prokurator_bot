@@ -198,6 +198,24 @@ def weekly_embed(guild: discord.Guild, days: int = 7) -> discord.Embed:
             text += "\nЛучшие логисты: " + ", ".join(f"<@{u}> ({n})" for u, n in refreshes[:3])
         e.add_field(name="🚚 Логистика", value=text[:1024], inline=False)
 
+    # Производство
+    try:
+        from cogs import prefecture
+        if prefecture.db is not None:
+            c = prefecture.db.conn
+            made = _q(c, "SELECT COUNT(*) FROM orders WHERE created_at >= ? AND message_id IS NOT NULL", (since,))[0][0]
+            delivered = _q(c, "SELECT t.user_id, COUNT(*) FROM orders o JOIN order_takers t ON t.order_id = o.id "
+                              "WHERE o.status = 'delivered' AND o.updated_at >= ? GROUP BY t.user_id "
+                              "ORDER BY COUNT(*) DESC", (since,))
+            done = _q(c, "SELECT COUNT(*) FROM orders WHERE status = 'delivered' AND updated_at >= ?", (since,))[0][0]
+            open_now = len(prefecture.db.open_orders())
+            text = f"Заказов: {made}\nДоставлено: {done}\nОткрыто сейчас: {open_now}"
+            if delivered:
+                text += "\nЛучшие Фабрумы: " + ", ".join(f"<@{u}> ({n})" for u, n in delivered[:3])
+            e.add_field(name="🏭 Производство", value=text[:1024], inline=False)
+    except Exception:
+        log.exception("Доклад: производство")
+
     # Консулат
     civic = []
     if consulate.db is not None:
