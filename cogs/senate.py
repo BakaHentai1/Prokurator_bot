@@ -6,6 +6,12 @@
   уведомление в личку). Открывается кнопкой на панели, командой /дело или
   долгим нажатием на человека → Приложения → «Личное дело».
 - /сенат — закреплённая панель.
+
+Права:
+  смотреть дела, список и выговоры — все офицеры (Центурион и выше);
+  выносить выговоры — Принцепс, Консулы, Легаты;
+  пополнять чёрный список — Принцепс, Консулы, Легаты, Центурионы;
+  заметки, снятие выговоров, удаление из чёрного списка — Принцепс и Консулы.
 Данные — в отдельном файле data/senate.db.
 """
 import logging
@@ -111,9 +117,34 @@ db: Optional[DB] = None
 
 # ---------- права ----------
 
+def _role(member: discord.abc.User, role_id: int) -> bool:
+    return bool(role_id) and has_any(member, {role_id})
+
+
 def is_officer(member: discord.abc.User) -> bool:
-    """Центурион и выше (и администраторы)."""
+    """Смотреть: Центурион и выше (и администраторы)."""
     return is_admin(member) or has_any(member, officer_roles())
+
+
+def is_command(member: discord.abc.User) -> bool:
+    """Принцепс и Консулы (и администраторы)."""
+    return is_admin(member) or _role(member, config.PRINCEPS_ROLE_ID) or _role(member, config.CONSUL_ROLE_ID)
+
+
+def can_warn(member: discord.abc.User) -> bool:
+    return is_command(member) or _role(member, config.LEGATE_ROLE_ID)
+
+
+def can_blacklist(member: discord.abc.User) -> bool:
+    return can_warn(member) or _role(member, config.CENTURION_ROLE_ID)
+
+
+async def no_rights(interaction: discord.Interaction, who: str) -> None:
+    text = f"⛔ Это могут только {who}."
+    if interaction.response.is_done():
+        await interaction.followup.send(text, ephemeral=True)
+    else:
+        await interaction.response.send_message(text, ephemeral=True)
 
 
 async def deny(interaction: discord.Interaction) -> None:
@@ -200,8 +231,8 @@ class BlacklistAddModal(discord.ui.Modal, title="Добавить в чёрны�
             self.discord_id.default = str(user.id)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        if not is_officer(interaction.user):
-            await deny(interaction)
+        if not can_blacklist(interaction.user):
+            await no_rights(interaction, "Принцепс, Консулы, Легаты и Центурионы")
             return
         raw = re.sub(r"\D", "", self.discord_id.value)
         did = int(raw) if len(raw) >= 15 else None
@@ -229,9 +260,8 @@ class BlacklistRemoveView(discord.ui.View):
         b = db.bl_get(int(select.values[0]))
         if b is None:
             return
-        if not (can_create(interaction.user) or interaction.user.id == b["author_id"]):
-            await interaction.response.send_message("⛔ Убрать запись может её автор или Принцепс, Консулы, Сенат.",
-                                                    ephemeral=True)
+        if not is_command(interaction.user):
+            await no_rights(interaction, "Принцепс и Консулы")
             return
         db.bl_remove(b["id"])
         await interaction.response.edit_message(content=f"✅ Запись №{b['id']} убрана из чёрного списка.",
@@ -248,8 +278,12 @@ def blacklist_embed() -> discord.Embed:
 
 
 class BlacklistView(discord.ui.View):
-    def __init__(self) -> None:
+    def __init__(self, viewer: discord.abc.User) -> None:
         super().__init__(timeout=300)
+        if not can_blacklist(viewer):
+            self.remove_item(self.add)
+        if not is_command(viewer):
+            self.remove_item(self.remove)
 
     @discord.ui.button(label="Добавить", emoji="➕", style=discord.ButtonStyle.danger)
     async def add(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -318,8 +352,11 @@ class NoteModal(discord.ui.Modal):
         self.add_item(self.text)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        if not is_officer(interaction.user):
-            await deny(interaction)
+        if self.kind == "warning" and not can_warn(interaction.user):
+            await no_rights(interaction, "Принцепс, Консулы и Легаты")
+            return
+        if self.kind == "note" and not is_command(interaction.user):
+            await no_rights(interaction, "Принцепс и Консулы")
             return
         nid = db.add_note(self.member.id, interaction.user.id, self.kind, self.text.value.strip())
         extra = ""
@@ -333,7 +370,8 @@ class NoteModal(discord.ui.Modal):
             count = len(db.active_warnings(self.member.id))
             if count >= WARN_ALERT:
                 extra += f"\n⚠️ У {self.member.mention} уже **{count}** действующих выговоров."
-        await interaction.response.edit_message(embed=dossier_embed(self.member), view=DossierView(self.member))
+        await interaction.response.edit_message(embed=dossier_embed(self.member),
+                                                view=DossierView(self.member, interaction.user))
         await interaction.followup.send(
             ("⚠️ Выговор вынесен" if self.kind == "warning" else "📝 Заметка добавлена") + f" (№{nid})." + extra,
             ephemeral=True)
@@ -355,9 +393,8 @@ class RemoveWarningView(discord.ui.View):
         if w is None or not w["active"]:
             await interaction.response.edit_message(content="Выговор уже снят.", view=None)
             return
-        if not (can_create(interaction.user) or interaction.user.id == w["author_id"]):
-            await interaction.response.send_message("⛔ Снять выговор может вынесший его или Принцепс, Консулы, Сенат.",
-                                                    ephemeral=True)
+        if not is_command(interaction.user):
+            await no_rights(interaction, "Принцепс и Консулы")
             return
         db.deactivate(w["id"], interaction.user.id)
         await interaction.response.edit_message(content=f"✅ Выговор №{w['id']} снят.", view=None)
@@ -368,26 +405,38 @@ class RemoveWarningView(discord.ui.View):
 
 
 class DossierView(discord.ui.View):
-    def __init__(self, member: discord.abc.User) -> None:
+    """Кнопки показываются по правам того, кто открыл дело."""
+
+    def __init__(self, member: discord.abc.User, viewer: discord.abc.User) -> None:
         super().__init__(timeout=900)
         self.member = member
+        if not is_command(viewer):
+            self.remove_item(self.note)
+            self.remove_item(self.unwarn)
+        if not can_warn(viewer):
+            self.remove_item(self.warning)
+        if not can_blacklist(viewer):
+            self.remove_item(self.blacklist)
 
     @discord.ui.button(label="Заметка", emoji="📝", style=discord.ButtonStyle.secondary)
     async def note(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if not is_officer(interaction.user):
-            await deny(interaction)
+        if not is_command(interaction.user):
+            await no_rights(interaction, "Принцепс и Консулы")
             return
         await interaction.response.send_modal(NoteModal(self.member, "note"))
 
     @discord.ui.button(label="Выговор", emoji="⚠️", style=discord.ButtonStyle.danger)
     async def warning(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if not is_officer(interaction.user):
-            await deny(interaction)
+        if not can_warn(interaction.user):
+            await no_rights(interaction, "Принцепс, Консулы и Легаты")
             return
         await interaction.response.send_modal(NoteModal(self.member, "warning"))
 
     @discord.ui.button(label="Снять выговор", emoji="✅", style=discord.ButtonStyle.secondary)
     async def unwarn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not is_command(interaction.user):
+            await no_rights(interaction, "Принцепс и Консулы")
+            return
         warnings = db.active_warnings(self.member.id)
         if not warnings:
             await interaction.response.send_message("Действующих выговоров нет.", ephemeral=True)
@@ -397,8 +446,8 @@ class DossierView(discord.ui.View):
 
     @discord.ui.button(label="В чёрный список", emoji="⛔", style=discord.ButtonStyle.secondary)
     async def blacklist(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if not is_officer(interaction.user):
-            await deny(interaction)
+        if not can_blacklist(interaction.user):
+            await no_rights(interaction, "Принцепс, Консулы, Легаты и Центурионы")
             return
         await interaction.response.send_modal(BlacklistAddModal(self.member))
 
@@ -410,7 +459,9 @@ async def show_dossier(interaction: discord.Interaction, member: discord.abc.Use
     if member.bot:
         await interaction.response.send_message("У ботов нет личного дела.", ephemeral=True)
         return
-    await interaction.response.send_message(embed=dossier_embed(member), view=DossierView(member), ephemeral=True)
+    view = DossierView(member, interaction.user)
+    await interaction.response.send_message(embed=dossier_embed(member), view=view if view.children else None,
+                                            ephemeral=True)
 
 
 @app_commands.context_menu(name="Личное дело")
@@ -446,7 +497,8 @@ class SenatePanel(discord.ui.View):
         if not is_officer(interaction.user):
             await deny(interaction)
             return
-        await interaction.response.send_message(embed=blacklist_embed(), view=BlacklistView(), ephemeral=True,
+        await interaction.response.send_message(embed=blacklist_embed(), view=BlacklistView(interaction.user),
+                                                ephemeral=True,
                                                 allowed_mentions=discord.AllowedMentions.none())
 
     @discord.ui.button(label="Выговоры", emoji="⚠️", style=discord.ButtonStyle.secondary, custom_id="sen:warnings")
@@ -477,6 +529,9 @@ def panel_embed() -> discord.Embed:
             "⛔ **Чёрный список** — шпионы и нежелательные игроки. Бот предупредит, если они подадут анкету "
             "или зайдут на сервер.\n"
             "⚠️ **Выговоры** — у кого сколько действующих выговоров.\n\n"
+            "**Права:** смотреть — все офицеры; выговоры — Принцепс, Консулы, Легаты; "
+            "пополнять чёрный список — Принцепс, Консулы, Легаты, Центурионы; заметки, снятие выговоров "
+            "и удаление из списка — Принцепс и Консулы.\n\n"
             "*Senatus Populusque Legionis*"
         ),
         color=discord.Color.dark_gold(),
