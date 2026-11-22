@@ -206,16 +206,6 @@ class ApplicationModal(discord.ui.Modal, title="Заявка в Легион"):
         placeholder="Сколько часов, в каких полках/кланах были, кем любите играть",
         max_length=500,
     )
-    source = discord.ui.TextInput(
-        label="Откуда узнали о Легионе",
-        max_length=200,
-        required=False,
-    )
-    motivation = discord.ui.TextInput(
-        label="Почему хотите вступить",
-        style=discord.TextStyle.paragraph,
-        max_length=500,
-    )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await submit_application(
@@ -226,8 +216,6 @@ class ApplicationModal(discord.ui.Modal, title="Заявка в Легион"):
                 ("Ник в Foxhole", self.nickname.value, True),
                 ("Онлайн", self.online.value, True),
                 ("Опыт", self.experience.value, False),
-                ("Откуда узнал", self.source.value, False),
-                ("Почему к нам", self.motivation.value, False),
             ],
             nickname=self.nickname.value,
         )
@@ -246,17 +234,6 @@ class AllyModal(discord.ui.Modal, title="Заявка союзника"):
         max_length=100,
         required=False,
     )
-    purpose = discord.ui.TextInput(
-        label="Цель визита на сервер",
-        style=discord.TextStyle.paragraph,
-        placeholder="Совместные операции, связь между полками, логистика…",
-        max_length=500,
-    )
-    contact = discord.ui.TextInput(
-        label="Кто из Легиона может за вас поручиться",
-        max_length=200,
-        required=False,
-    )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await submit_application(
@@ -267,8 +244,6 @@ class AllyModal(discord.ui.Modal, title="Заявка союзника"):
                 ("Ник в Foxhole", self.nickname.value, True),
                 ("Полк / клан", self.unit.value, True),
                 ("Должность", self.position.value, True),
-                ("Цель визита", self.purpose.value, False),
-                ("Поручитель", self.contact.value, False),
             ],
             nickname=self.nickname.value,
         )
