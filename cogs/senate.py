@@ -12,6 +12,10 @@
   выносить выговоры — Принцепс, Консулы, Легаты;
   пополнять чёрный список — Принцепс, Консулы, Легаты, Центурионы;
   заметки, снятие выговоров, удаление из чёрного списка — Принцепс и Консулы.
+
+Представления к повышению: офицер предлагает одного или нескольких кандидатов в звание,
+офицеры голосуют «За»/«Против», Принцепс утверждает (всех или часть). Бот меняет роли
+и публикует приказ в чате Легиона.
 Данные — в отдельном файле data/senate.db.
 """
 import logging
@@ -55,6 +59,31 @@ class DB:
                 removed_ts INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_notes_user ON notes (user_id);
+            CREATE TABLE IF NOT EXISTS promotions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id  INTEGER NOT NULL,
+                message_id  INTEGER,
+                rank_id     INTEGER NOT NULL,
+                reason      TEXT    NOT NULL,
+                author_id   INTEGER NOT NULL,
+                ts          INTEGER NOT NULL,
+                status      TEXT    NOT NULL DEFAULT 'open',   -- open / approved / rejected
+                decided_by  INTEGER,
+                decided_ts  INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS promo_candidates (
+                promo_id INTEGER NOT NULL,
+                user_id  INTEGER NOT NULL,
+                result   TEXT,                                 -- approved / rejected
+                PRIMARY KEY (promo_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS promo_votes (
+                promo_id INTEGER NOT NULL,
+                voter_id INTEGER NOT NULL,
+                vote     INTEGER NOT NULL,                     -- 1 за / 0 против
+                ts       INTEGER NOT NULL,
+                PRIMARY KEY (promo_id, voter_id)
+            );
             CREATE TABLE IF NOT EXISTS blacklist (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 discord_id INTEGER,
@@ -110,6 +139,53 @@ class DB:
     def bl_remove(self, bid: int) -> None:
         self.conn.execute("UPDATE blacklist SET active = 0 WHERE id = ?", (bid,))
         self.conn.commit()
+
+    # представления
+    def promo_create(self, channel_id: int, rank_id: int, reason: str, author_id: int, candidates: list[int]) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO promotions (channel_id, rank_id, reason, author_id, ts) VALUES (?, ?, ?, ?, ?)",
+            (channel_id, rank_id, reason, author_id, int(time.time())))
+        pid = cur.lastrowid
+        for uid in candidates:
+            self.conn.execute("INSERT OR IGNORE INTO promo_candidates (promo_id, user_id) VALUES (?, ?)", (pid, uid))
+        self.conn.commit()
+        return pid
+
+    def promo(self, pid: int) -> Optional[dict]:
+        row = self.conn.execute("SELECT * FROM promotions WHERE id = ?", (pid,)).fetchone()
+        return dict(row) if row else None
+
+    def promo_set(self, pid: int, **fields) -> None:
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.conn.execute(f"UPDATE promotions SET {cols} WHERE id = ?", (*fields.values(), pid))
+        self.conn.commit()
+
+    def promo_candidates(self, pid: int) -> list[dict]:
+        return [dict(r) for r in self.conn.execute("SELECT * FROM promo_candidates WHERE promo_id = ?", (pid,))]
+
+    def promo_result(self, pid: int, user_id: int, result: str) -> None:
+        self.conn.execute("UPDATE promo_candidates SET result = ? WHERE promo_id = ? AND user_id = ?",
+                          (result, pid, user_id))
+        self.conn.commit()
+
+    def promo_vote(self, pid: int, voter_id: int, vote: int) -> Optional[int]:
+        row = self.conn.execute("SELECT vote FROM promo_votes WHERE promo_id = ? AND voter_id = ?",
+                                (pid, voter_id)).fetchone()
+        self.conn.execute("INSERT OR REPLACE INTO promo_votes VALUES (?, ?, ?, ?)",
+                          (pid, voter_id, vote, int(time.time())))
+        self.conn.commit()
+        return row["vote"] if row else None
+
+    def promo_votes(self, pid: int) -> tuple[list[int], list[int]]:
+        rows = self.conn.execute("SELECT voter_id, vote FROM promo_votes WHERE promo_id = ? ORDER BY ts", (pid,))
+        yes, no = [], []
+        for r in rows:
+            (yes if r["vote"] else no).append(r["voter_id"])
+        return yes, no
+
+    def open_promos(self) -> list[dict]:
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM promotions WHERE status = 'open' AND message_id IS NOT NULL ORDER BY ts")]
 
 
 db: Optional[DB] = None
@@ -479,6 +555,303 @@ class PickMemberView(discord.ui.View):
         await show_dossier(interaction, select.values[0])
 
 
+# ---------- представления к повышению ----------
+
+def is_princeps(member: discord.abc.User) -> bool:
+    return is_admin(member) or _role(member, config.PRINCEPS_ROLE_ID)
+
+
+def rank_ladder() -> list[int]:
+    """Звания, в которые можно представить (снизу вверх)."""
+    return [r for r in (config.FABRUM_ROLE_ID, config.CENTURION_ROLE_ID, config.LEGATE_ROLE_ID,
+                        config.CONSUL_ROLE_ID, config.SENATE_ROLE_ID) if r]
+
+
+def promo_link(p: dict) -> str:
+    return f"https://discord.com/channels/{config.GUILD_ID}/{p['channel_id']}/{p['message_id']}"
+
+
+def promo_embed(p: dict) -> discord.Embed:
+    status = p["status"]
+    color = {"open": discord.Color.dark_gold(), "approved": discord.Color.green(),
+             "rejected": discord.Color.dark_grey()}[status]
+    title = f"🎖️ ПРЕДСТАВЛЕНИЕ №{p['id']} К ЗВАНИЮ"
+    if status == "approved":
+        title += " · УТВЕРЖДЕНО"
+    elif status == "rejected":
+        title += " · ОТКЛОНЕНО"
+    e = discord.Embed(title=title, color=color)
+    e.add_field(name="Звание", value=f"<@&{p['rank_id']}>", inline=True)
+    e.add_field(name="Представил", value=f"<@{p['author_id']}>", inline=True)
+    cands = db.promo_candidates(p["id"])
+    lines = []
+    for c in cands:
+        mark = {"approved": "✅ ", "rejected": "❌ "}.get(c["result"] or "", "")
+        lines.append(f"{mark}<@{c['user_id']}>")
+    e.add_field(name=f"Кандидаты ({len(cands)})", value="\n".join(lines)[:1024] or "—", inline=False)
+    e.add_field(name="Обоснование", value=p["reason"][:1024], inline=False)
+    yes, no = db.promo_votes(p["id"])
+    e.add_field(name=f"👍 За ({len(yes)})", value=(" ".join(f"<@{u}>" for u in yes) or "—")[:1024], inline=True)
+    e.add_field(name=f"👎 Против ({len(no)})", value=(" ".join(f"<@{u}>" for u in no) or "—")[:1024], inline=True)
+    if p["decided_by"]:
+        e.add_field(name="Решение", value=f"<@{p['decided_by']}> · <t:{p['decided_ts']}:f>", inline=False)
+    elif status == "open":
+        e.set_footer(text="Голосуют офицеры. Утверждает Принцепс.")
+    return e
+
+
+class PromoButton(discord.ui.DynamicItem[discord.ui.Button], template=r"promo:(?P<pid>[0-9]+):(?P<act>[a-z]+)"):
+    def __init__(self, pid: int, act: str, label: str = "…", emoji: Optional[str] = None,
+                 style: discord.ButtonStyle = discord.ButtonStyle.secondary, row: Optional[int] = None) -> None:
+        super().__init__(discord.ui.Button(label=label, emoji=emoji, style=style, row=row,
+                                           custom_id=f"promo:{pid}:{act}"))
+        self.pid = pid
+        self.act = act
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Button, match, /):
+        return cls(int(match["pid"]), match["act"])
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if self.act in ("yes", "no"):
+            await promo_vote(interaction, self.pid, self.act == "yes")
+        elif self.act == "decide":
+            await promo_decide(interaction, self.pid)
+
+
+def promo_view(p: dict) -> Optional[discord.ui.View]:
+    if p["status"] != "open":
+        return None
+    view = discord.ui.View(timeout=None)
+    view.add_item(PromoButton(p["id"], "yes", "За", "👍", discord.ButtonStyle.success))
+    view.add_item(PromoButton(p["id"], "no", "Против", "👎", discord.ButtonStyle.danger))
+    view.add_item(PromoButton(p["id"], "decide", "Решение Принцепса", "⚖️", discord.ButtonStyle.primary))
+    return view
+
+
+async def promo_vote(interaction: discord.Interaction, pid: int, yes: bool) -> None:
+    p = db.promo(pid)
+    if p is None or p["status"] != "open":
+        await interaction.response.send_message("Представление уже рассмотрено.", ephemeral=True)
+        return
+    if not is_officer(interaction.user):
+        await deny(interaction)
+        return
+    if interaction.user.id in {c["user_id"] for c in db.promo_candidates(pid)}:
+        await interaction.response.send_message("Кандидаты не голосуют за своё представление.", ephemeral=True)
+        return
+    db.promo_vote(pid, interaction.user.id, 1 if yes else 0)
+    await interaction.response.edit_message(embed=promo_embed(db.promo(pid)))
+
+
+class PromoDecisionView(discord.ui.View):
+    """Принцепс отмечает, кого утвердить (по умолчанию — всех)."""
+
+    def __init__(self, p: dict, guild: discord.Guild, message: discord.Message) -> None:
+        super().__init__(timeout=600)
+        self.pid = p["id"]
+        self.message = message
+        self.remove_old = True
+        cands = db.promo_candidates(p["id"])
+        self.chosen = {c["user_id"] for c in cands}
+        options = []
+        for c in cands[:25]:
+            m = guild.get_member(c["user_id"])
+            options.append(discord.SelectOption(label=(m.display_name if m else str(c["user_id"]))[:100],
+                                                value=str(c["user_id"]), default=True))
+        self.pick.options = options
+        self.pick.max_values = len(options)
+
+    @discord.ui.select(placeholder="Кого утвердить", min_values=0, options=[discord.SelectOption(label="—")], row=0)
+    async def pick(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
+        self.chosen = {int(v) for v in select.values}
+        for o in select.options:
+            o.default = o.value in select.values
+        await interaction.response.edit_message(content=self.summary(), view=self)
+
+    @discord.ui.select(placeholder="Прежние звания: снять", options=[
+        discord.SelectOption(label="Снять прежние звания (Фабрум, Центурион…)", value="1", emoji="🔁", default=True),
+        discord.SelectOption(label="Оставить прежние звания", value="0", emoji="➕"),
+    ], row=1)
+    async def old(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
+        self.remove_old = select.values[0] == "1"
+        for o in select.options:
+            o.default = o.value == select.values[0]
+        await interaction.response.edit_message(content=self.summary(), view=self)
+
+    def summary(self) -> str:
+        names = " ".join(f"<@{u}>" for u in sorted(self.chosen)) or "никого"
+        return (f"⚖️ **Решение по представлению №{self.pid}**\nУтвердить: {names}\n"
+                f"Прежние звания: {'снять' if self.remove_old else 'оставить'}.\n"
+                "Остальные кандидаты будут отклонены.")[:2000]
+
+    @discord.ui.button(label="Утвердить выбранных", emoji="✅", style=discord.ButtonStyle.success, row=2)
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._finish(interaction, approve=True)
+
+    @discord.ui.button(label="Отклонить всех", emoji="❌", style=discord.ButtonStyle.danger, row=2)
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._finish(interaction, approve=False)
+
+    async def _finish(self, interaction: discord.Interaction, approve: bool) -> None:
+        p = db.promo(self.pid)
+        if p is None or p["status"] != "open":
+            await interaction.response.edit_message(content="Представление уже рассмотрено.", view=None)
+            return
+        if not is_princeps(interaction.user):
+            await no_rights(interaction, "Принцепс")
+            return
+        self.stop()
+        await interaction.response.edit_message(content="⏳ Выполняю…", view=None)
+        guild = interaction.guild
+        rank = guild.get_role(p["rank_id"])
+        approved = sorted(self.chosen) if approve else []
+        problems = []
+        ladder = set(rank_ladder())
+        for c in db.promo_candidates(self.pid):
+            uid = c["user_id"]
+            if uid not in approved:
+                db.promo_result(self.pid, uid, "rejected")
+                continue
+            member = guild.get_member(uid)
+            if member is None or rank is None:
+                problems.append(f"<@{uid}>: нет на сервере или звание не найдено")
+                db.promo_result(self.pid, uid, "rejected")
+                continue
+            try:
+                await member.add_roles(rank, reason=f"Представление №{self.pid}")
+                if self.remove_old:
+                    old = [r for r in member.roles if r.id in ladder and r.id != rank.id]
+                    if old:
+                        await member.remove_roles(*old, reason=f"Представление №{self.pid}: повышение")
+                db.promo_result(self.pid, uid, "approved")
+            except discord.HTTPException:
+                problems.append(f"{member.mention}: не хватает прав (роль бота должна быть выше)")
+                db.promo_result(self.pid, uid, "rejected")
+        done = [c["user_id"] for c in db.promo_candidates(self.pid) if c["result"] == "approved"]
+        db.promo_set(self.pid, status="approved" if done else "rejected", decided_by=interaction.user.id,
+                     decided_ts=int(time.time()))
+        p = db.promo(self.pid)
+        try:
+            await self.message.edit(embed=promo_embed(p), view=None)
+        except discord.HTTPException:
+            pass
+
+        if done:
+            order = (f"📜 **ПРИКАЗ №{self.pid}**\n\nИменем Сената и Принцепса "
+                     f"{', '.join(f'<@{u}>' for u in done)} {'возводятся' if len(done) > 1 else 'возводится'} "
+                     f"в звание <@&{p['rank_id']}>.\n\nЗа: {p['reason'][:500]}\n\n*Senatus Populusque Legionis*")
+            if config.LEGION_CHAT_CHANNEL_ID:
+                try:
+                    channel = (interaction.client.get_channel(config.LEGION_CHAT_CHANNEL_ID)
+                               or await interaction.client.fetch_channel(config.LEGION_CHAT_CHANNEL_ID))
+                    await channel.send(order[:2000], allowed_mentions=discord.AllowedMentions(users=True))
+                except discord.HTTPException:
+                    problems.append("приказ в чат Легиона не отправлен")
+        from cogs.consulate import archive
+        await archive(interaction.client,
+                      f"🎖️ <t:{int(time.time())}:f> · {interaction.user.mention} рассмотрел представление №{self.pid} "
+                      f"к званию <@&{p['rank_id']}>: утверждены {', '.join(f'<@{u}>' for u in done) or 'никто'} · "
+                      f"{promo_link(p)}")
+        text = f"✅ Готово: утверждено {len(done)}." if done else "❌ Представление отклонено."
+        if problems:
+            text += "\n⚠️ " + "; ".join(problems)
+        await interaction.edit_original_response(content=text[:2000])
+
+
+async def promo_decide(interaction: discord.Interaction, pid: int) -> None:
+    p = db.promo(pid)
+    if p is None or p["status"] != "open":
+        await interaction.response.send_message("Представление уже рассмотрено.", ephemeral=True)
+        return
+    if not is_princeps(interaction.user):
+        await no_rights(interaction, "Принцепс")
+        return
+    view = PromoDecisionView(p, interaction.guild, interaction.message)
+    await interaction.response.send_message(view.summary(), view=view, ephemeral=True)
+
+
+class PromoReasonModal(discord.ui.Modal, title="Представление к повышению"):
+    reason = discord.ui.TextInput(label="Обоснование", style=discord.TextStyle.paragraph, max_length=1000,
+                                  placeholder="За какие заслуги, чем отличились")
+
+    def __init__(self, setup: "PromoSetupView") -> None:
+        super().__init__()
+        self.setup = setup
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not is_officer(interaction.user):
+            await deny(interaction)
+            return
+        st = self.setup
+        if st.done:
+            return
+        st.done = True
+        st.stop()
+        await interaction.response.edit_message(content="⏳ Публикую…", view=None)
+        pid = db.promo_create(interaction.channel.id, st.rank_id, self.reason.value.strip(), interaction.user.id,
+                              sorted(st.candidates))
+        p = db.promo(pid)
+        try:
+            message = await interaction.channel.send(embed=promo_embed(p), view=promo_view(p),
+                                                     allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException as e:
+            db.promo_set(pid, status="rejected")
+            await interaction.edit_original_response(content=f"Не удалось опубликовать: {e.text or e}")
+            return
+        db.promo_set(pid, message_id=message.id)
+        await interaction.edit_original_response(content=f"✅ Представление №{pid} опубликовано: {message.jump_url}")
+
+
+class PromoSetupView(discord.ui.View):
+    def __init__(self, guild: discord.Guild) -> None:
+        super().__init__(timeout=900)
+        self.candidates: set[int] = set()
+        self.rank_id: Optional[int] = None
+        self.done = False
+        options = []
+        for rid in rank_ladder():
+            role = guild.get_role(rid)
+            if role:
+                options.append(discord.SelectOption(label=role.name[:100], value=str(rid)))
+        if options:
+            self.rank.options = options
+        else:
+            self.remove_item(self.rank)
+
+    def summary(self) -> str:
+        who = " ".join(f"<@{u}>" for u in sorted(self.candidates)) or "не выбраны"
+        rank = f"<@&{self.rank_id}>" if self.rank_id else "не выбрано"
+        return (f"🎖️ **Представление к повышению**\nКандидаты: {who}\nЗвание: {rank}\n\n"
+                "Выберите одного или нескольких кандидатов и звание, затем «Обоснование и публикация».")[:2000]
+
+    @discord.ui.select(cls=discord.ui.UserSelect, placeholder="Кандидаты (можно несколько)", min_values=1,
+                       max_values=10, row=0)
+    async def people(self, interaction: discord.Interaction, select: discord.ui.UserSelect) -> None:
+        self.candidates = {u.id for u in select.values if not u.bot}
+        await interaction.response.edit_message(content=self.summary(), view=self)
+
+    @discord.ui.select(placeholder="В какое звание", options=[discord.SelectOption(label="—")], row=1)
+    async def rank(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
+        self.rank_id = int(select.values[0])
+        await interaction.response.edit_message(content=self.summary(), view=self)
+
+    @discord.ui.button(label="Обоснование и публикация", emoji="📝", style=discord.ButtonStyle.success, row=2)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not self.candidates or not self.rank_id:
+            await interaction.response.send_message("Сначала выберите кандидатов и звание.", ephemeral=True)
+            return
+        await interaction.response.send_modal(PromoReasonModal(self))
+
+
+async def start_promotion(interaction: discord.Interaction) -> None:
+    if not is_officer(interaction.user):
+        await deny(interaction)
+        return
+    view = PromoSetupView(interaction.guild)
+    await interaction.response.send_message(view.summary(), view=view, ephemeral=True)
+
+
 # ---------- панель ----------
 
 class SenatePanel(discord.ui.View):
@@ -500,6 +873,32 @@ class SenatePanel(discord.ui.View):
         await interaction.response.send_message(embed=blacklist_embed(), view=BlacklistView(interaction.user),
                                                 ephemeral=True,
                                                 allowed_mentions=discord.AllowedMentions.none())
+
+    @discord.ui.button(label="Представление к повышению", emoji="🎖️", style=discord.ButtonStyle.success,
+                       custom_id="sen:promo", row=1)
+    async def promotion(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await start_promotion(interaction)
+
+    @discord.ui.button(label="Открытые представления", emoji="📋", style=discord.ButtonStyle.secondary,
+                       custom_id="sen:promos", row=1)
+    async def promotions(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not is_officer(interaction.user):
+            await deny(interaction)
+            return
+        items = db.open_promos()
+        if not items:
+            await interaction.response.send_message("Открытых представлений нет.", ephemeral=True)
+            return
+        lines = []
+        for p in items[:20]:
+            yes, no = db.promo_votes(p["id"])
+            cands = " ".join(f"<@{c['user_id']}>" for c in db.promo_candidates(p["id"]))
+            lines.append(f"**№{p['id']}** → <@&{p['rank_id']}>: {cands}\n👍 {len(yes)} · 👎 {len(no)} · "
+                         f"[открыть]({promo_link(p)})")
+        await interaction.response.send_message(
+            embed=discord.Embed(title=f"🎖️ Открытые представления: {len(items)}",
+                                description="\n\n".join(lines)[:4000], color=discord.Color.dark_gold()),
+            ephemeral=True)
 
     @discord.ui.button(label="Выговоры", emoji="⚠️", style=discord.ButtonStyle.secondary, custom_id="sen:warnings")
     async def warnings(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -528,7 +927,10 @@ def panel_embed() -> discord.Embed:
             "Также: долгое нажатие на человека → Приложения → «Личное дело».\n"
             "⛔ **Чёрный список** — шпионы и нежелательные игроки. Бот предупредит, если они подадут анкету "
             "или зайдут на сервер.\n"
-            "⚠️ **Выговоры** — у кого сколько действующих выговоров.\n\n"
+            "⚠️ **Выговоры** — у кого сколько действующих выговоров.\n"
+            "🎖️ **Представление к повышению** — один или несколько кандидатов в звание; офицеры голосуют, "
+            "Принцепс утверждает, бот меняет роли и публикует приказ.\n"
+            "📋 **Открытые представления** — что сейчас на рассмотрении.\n\n"
             "**Права:** смотреть — все офицеры; выговоры — Принцепс, Консулы, Легаты; "
             "пополнять чёрный список — Принцепс, Консулы, Легаты, Центурионы; заметки, снятие выговоров "
             "и удаление из списка — Принцепс и Консулы.\n\n"
@@ -562,6 +964,11 @@ class Senate(commands.Cog):
     async def dossier(self, interaction: discord.Interaction, участник: discord.Member) -> None:
         await show_dossier(interaction, участник)
 
+    @app_commands.command(name="представление", description="Представить к повышению (офицеры)")
+    @app_commands.guild_only()
+    async def promotion_cmd(self, interaction: discord.Interaction) -> None:
+        await start_promotion(interaction)
+
     @app_commands.command(name="сенат", description="Опубликовать и закрепить панель Сената в этом канале")
     @app_commands.default_permissions(administrator=True)
     @app_commands.guild_only()
@@ -587,5 +994,6 @@ async def setup(bot: commands.Bot) -> None:
     global db
     db = DB(DB_PATH)
     bot.add_view(SenatePanel())
+    bot.add_dynamic_items(PromoButton)
     await bot.add_cog(Senate(bot))
     bot.tree.add_command(dossier_menu)
