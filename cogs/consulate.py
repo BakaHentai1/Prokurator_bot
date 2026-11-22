@@ -510,11 +510,11 @@ class ConsulatePanel(discord.ui.View):
 
     @discord.ui.button(label="Выборы", emoji="🏛️", style=discord.ButtonStyle.secondary, custom_id="cons:elect")
     async def new_election(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        from cogs.elections import ElectionForm  # модуль выборов загружается после этого
+        from cogs.elections import ElectionTypeView  # модуль выборов загружается после этого
         if not can_create(interaction.user):
             await interaction.response.send_message("⛔ Выборы объявляют Принцепс, Консулы и Сенат.", ephemeral=True)
             return
-        await interaction.response.send_modal(ElectionForm())
+        await interaction.response.send_message("Какие выборы объявляем?", view=ElectionTypeView(), ephemeral=True)
 
     @discord.ui.button(label="Новая операция", emoji="⚔️", style=discord.ButtonStyle.danger, custom_id="cons:op")
     async def new_op(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

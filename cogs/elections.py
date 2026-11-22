@@ -7,6 +7,10 @@
 2. Голосование: тайное, можно отметить столько кандидатов, сколько мест.
    Если кандидатов не больше, чем мест, — избираются без голосования.
 3. Итоги публикуются сами. Роль выдаётся после «Утвердить» Принцепса (или администратора).
+Виды выборов: «Консул» (до 2 мест, кандидаты — только старше легионера),
+«Легат» (до 5 мест, выдвигаться могут все легионеры) и «Другие» (свои настройки).
+Голосуют все легионеры (или только офицеры — по выбору).
+
 Журнал — в «Архивариум». Данные — в отдельном файле data/elections.db.
 """
 import logging
@@ -25,6 +29,17 @@ from cogs.consulate import AUDIENCES, archive, can_create, has_any, is_admin, le
 log = logging.getLogger("elections")
 
 DB_PATH: Path = config.DATA_DIR / "elections.db"
+# Виды выборов: должность, максимум мест, кто может выдвигаться, роль победителям
+PRESETS = {
+    "consul": {"name": "Консул", "max_seats": 2, "nominees": "senior", "role": lambda: config.CONSUL_ROLE_ID},
+    "legate": {"name": "Легат", "max_seats": 5, "nominees": "legion", "role": lambda: config.LEGATE_ROLE_ID},
+    "other": {"name": "", "max_seats": 10, "nominees": "legion", "role": lambda: None},
+}
+NOMINEES = {
+    "legion": "все легионеры",
+    "senior": "только старше легионера",
+}
+
 PHASES = {
     "nominate": "🙋 Выдвижение кандидатов",
     "vote": "🗳️ Тайное голосование",
@@ -77,14 +92,18 @@ class DB:
             );
             """
         )
+        # Миграция: кто может выдвигаться (у старых выборов — все легионеры)
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(elections)")}
+        if "nominees" not in cols:
+            self.conn.execute("ALTER TABLE elections ADD COLUMN nominees TEXT NOT NULL DEFAULT 'legion'")
         self.conn.commit()
 
     def create(self, d: dict) -> int:
         cur = self.conn.execute(
             "INSERT INTO elections (channel_id, position, description, seats, audience, role_id, creator_id,"
-            " created_at, nominate_ends, vote_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " created_at, nominate_ends, vote_seconds, nominees) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (d["channel_id"], d["position"], d["description"], d["seats"], d["audience"], d["role_id"],
-             d["creator_id"], int(time.time()), d["nominate_ends"], d["vote_seconds"]),
+             d["creator_id"], int(time.time()), d["nominate_ends"], d["vote_seconds"], d["nominees"]),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -150,6 +169,17 @@ def can_take_part(member: discord.abc.User, e: dict) -> bool:
     return has_any(member, officer_roles() if e["audience"] == "officers" else legion_roles())
 
 
+def senior_roles() -> set[int]:
+    """Все звания старше легионера."""
+    return legion_roles() - {config.MEMBER_ROLE_ID}
+
+
+def can_nominate(member: discord.abc.User, e: dict) -> bool:
+    if e["nominees"] == "senior":
+        return is_admin(member) or has_any(member, senior_roles())
+    return can_take_part(member, e)
+
+
 def can_manage(member: discord.abc.User, e: dict) -> bool:
     return member.id == e["creator_id"] or is_admin(member)
 
@@ -190,7 +220,8 @@ def election_embed(e: dict) -> discord.Embed:
     phase = e["phase"]
     color = {"nominate": discord.Color.dark_red(), "vote": discord.Color.dark_red(),
              "done": discord.Color.gold(), "cancelled": discord.Color.dark_grey()}[phase]
-    desc = f"**Мест: {e['seats']}** · Участвуют: {AUDIENCES[e['audience']]}"
+    desc = (f"**Мест: {e['seats']}** · Выдвигаться могут: {NOMINEES[e['nominees']]} · "
+            f"Голосуют: {AUDIENCES[e['audience']]}")
     if e["role_id"]:
         desc += f" · Роль победителям: <@&{e['role_id']}>"
     if e["description"]:
@@ -393,8 +424,10 @@ async def on_nominate(interaction: discord.Interaction, eid: int) -> None:
     if e is None or e["phase"] != "nominate":
         await interaction.response.send_message("Выдвижение закрыто.", ephemeral=True)
         return
-    if not can_take_part(interaction.user, e):
-        await interaction.response.send_message("⛔ Выдвигаться могут только участники этих выборов.", ephemeral=True)
+    if not can_nominate(interaction.user, e):
+        who = "звания старше легионера" if e["nominees"] == "senior" else "участники этих выборов"
+        await interaction.response.send_message(f"⛔ На эту должность могут выдвигаться только {who}.",
+                                                ephemeral=True)
         return
     await interaction.response.send_modal(NominateModal(eid))
 
@@ -542,26 +575,54 @@ async def on_confirm_swap(interaction: discord.Interaction, eid: int) -> None:
 
 # ---------- создание ----------
 
+class ElectionTypeView(discord.ui.View):
+    """Первый шаг: какие выборы объявляем."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=300)
+
+    @discord.ui.select(placeholder="Какие выборы?", options=[
+        discord.SelectOption(label="Консул", value="consul", emoji="🏛️",
+                             description="До 2 мест · кандидаты — только старше легионера"),
+        discord.SelectOption(label="Легат", value="legate", emoji="⚔️",
+                             description="До 5 мест · выдвигаться могут все легионеры"),
+        discord.SelectOption(label="Другие выборы", value="other", emoji="✏️",
+                             description="Своя должность и свои настройки"),
+    ])
+    async def kind(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
+        await interaction.response.send_modal(ElectionForm(select.values[0]))
+
+
 class ElectionForm(discord.ui.Modal, title="Новые выборы"):
-    position = discord.ui.TextInput(label="Должность", max_length=60, placeholder="Например: Консул")
-    seats = discord.ui.TextInput(label="Сколько мест", max_length=2, default="1")
-    nominate = discord.ui.TextInput(label="Выдвижение длится", max_length=20, default="24ч",
-                                    placeholder="Например: 12ч, 2д")
-    vote = discord.ui.TextInput(label="Голосование длится", max_length=20, default="24ч",
-                                placeholder="Например: 12ч, 2д")
-    description = discord.ui.TextInput(label="Условия и описание (необязательно)", style=discord.TextStyle.paragraph,
-                                       max_length=1000, required=False)
+    def __init__(self, preset: str = "other") -> None:
+        p = PRESETS[preset]
+        super().__init__(title=f"Выборы: {p['name']}" if p["name"] else "Новые выборы")
+        self.preset = preset
+        self.position = discord.ui.TextInput(label="Должность", max_length=60, placeholder="Например: Квестор",
+                                             default=p["name"] or None)
+        self.seats = discord.ui.TextInput(label=f"Сколько мест (не больше {p['max_seats']})", max_length=2,
+                                          default=str(p["max_seats"]) if p["name"] else "1")
+        self.nominate = discord.ui.TextInput(label="Выдвижение длится", max_length=20, default="24ч",
+                                             placeholder="Например: 12ч, 2д")
+        self.vote = discord.ui.TextInput(label="Голосование длится", max_length=20, default="24ч",
+                                         placeholder="Например: 12ч, 2д")
+        self.description = discord.ui.TextInput(label="Условия и описание (необязательно)",
+                                                style=discord.TextStyle.paragraph, max_length=1000, required=False)
+        for item in (self.position, self.seats, self.nominate, self.vote, self.description):
+            self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        p = PRESETS[self.preset]
         try:
             seats = int(self.seats.value.strip())
         except ValueError:
             seats = 0
         nominate = parse_duration(self.nominate.value)
         vote = parse_duration(self.vote.value)
-        if not 1 <= seats <= 10 or nominate is None or vote is None:
+        if not 1 <= seats <= p["max_seats"] or nominate is None or vote is None:
             await interaction.response.send_message(
-                "Проверьте поля: мест — от 1 до 10, сроки — например `12ч`, `2д`, `1д 12ч`.", ephemeral=True
+                f"Проверьте поля: мест — от 1 до {p['max_seats']}, сроки — например `12ч`, `2д`, `1д 12ч`.",
+                ephemeral=True,
             )
             return
         draft = {
@@ -570,20 +631,23 @@ class ElectionForm(discord.ui.Modal, title="Новые выборы"):
             "description": self.description.value.strip(),
             "seats": seats,
             "audience": "legion",
-            "role_id": None,
+            "nominees": p["nominees"],
+            "role_id": p["role"]() or None,
             "creator_id": interaction.user.id,
             "nominate_seconds": nominate,
             "vote_seconds": vote,
         }
-        view = ElectionSetupView(draft)
+        view = ElectionSetupView(draft, custom=self.preset == "other")
         await interaction.response.send_message(view.summary(), view=view, ephemeral=True)
 
 
 class ElectionSetupView(discord.ui.View):
-    def __init__(self, draft: dict) -> None:
+    def __init__(self, draft: dict, custom: bool = True) -> None:
         super().__init__(timeout=900)
         self.draft = draft
         self.done = False
+        if not custom:  # у Консула и Легата правило выдвижения фиксировано
+            self.remove_item(self.nominees)
 
     def summary(self) -> str:
         d = self.draft
@@ -591,7 +655,8 @@ class ElectionSetupView(discord.ui.View):
         return (
             f"**Выборы: {d['position']}** · мест: {d['seats']}\n"
             f"Выдвижение: {d['nominate_seconds'] / 3600:g} ч · голосование: {d['vote_seconds'] / 3600:g} ч\n"
-            f"Участвуют: {AUDIENCES[d['audience']]} · Роль победителям: {role}\n\n"
+            f"Выдвигаться могут: {NOMINEES[d['nominees']]} · Голосуют: {AUDIENCES[d['audience']]}\n"
+            f"Роль победителям: {role}\n\n"
             "Выберите роль для победителей (после утверждения Принцепсом) и нажмите «Объявить выборы»."
         )
 
@@ -608,7 +673,14 @@ class ElectionSetupView(discord.ui.View):
         self.draft["audience"] = select.values[0]
         await interaction.response.edit_message(content=self.summary(), view=self)
 
-    @discord.ui.button(label="Объявить выборы", emoji="🏛️", style=discord.ButtonStyle.success, row=2)
+    @discord.ui.select(placeholder="Кто может выдвигаться: все легионеры",
+                       options=[discord.SelectOption(label=f"Выдвигаться могут {label}", value=key)
+                                for key, label in NOMINEES.items()], row=2)
+    async def nominees(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
+        self.draft["nominees"] = select.values[0]
+        await interaction.response.edit_message(content=self.summary(), view=self)
+
+    @discord.ui.button(label="Объявить выборы", emoji="🏛️", style=discord.ButtonStyle.success, row=3)
     async def publish(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if self.done:
             return
@@ -671,7 +743,7 @@ class Elections(commands.Cog):
         if not can_create(interaction.user):
             await interaction.response.send_message("⛔ Выборы объявляют Принцепс, Консулы и Сенат.", ephemeral=True)
             return
-        await interaction.response.send_modal(ElectionForm())
+        await interaction.response.send_message("Какие выборы объявляем?", view=ElectionTypeView(), ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
