@@ -4,6 +4,8 @@
 Заказ: что нужно, куда доставить (можно номер склада из Секретариума), срок, приоритет.
 Статусы: 🆕 Новый → 🙋 Взят → 🏭 В производстве → 🚚 Отправлен → ✅ Доставлен (или 🚫 Отменён).
 Срочные заказы упоминают роль Фабрумов. Выполненные заказы идут в профиль исполнителей.
+Очередь MPF: «Поставил в MPF» — что, где, когда готово (можно привязать к заказу).
+Бот пишет в личку, когда готово, и напоминает в канале, если не забрали за 2 часа.
 /префектура — закреплённая панель. Данные — в отдельном файле data/prefecture.db.
 """
 import logging
@@ -422,6 +424,220 @@ def list_embed(items: list[dict], title: str) -> discord.Embed:
     return discord.Embed(title=f"{title}: {len(items)}", description=text[:4000], color=discord.Color.orange())
 
 
+# ---------- MPF: очередь массового производства ----------
+
+class MpfDB:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS mpf_jobs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id  INTEGER NOT NULL,
+                message_id  INTEGER,
+                user_id     INTEGER NOT NULL,
+                items       TEXT    NOT NULL,
+                place       TEXT    NOT NULL DEFAULT '',
+                order_id    INTEGER,
+                created_at  INTEGER NOT NULL,
+                ready_at    INTEGER NOT NULL,
+                status      TEXT    NOT NULL DEFAULT 'queued',   -- queued / collected / cancelled
+                stage       INTEGER NOT NULL DEFAULT 0,          -- 1: готово, 2: лежит 2+ ч
+                closed_at   INTEGER
+            );
+            """
+        )
+        self.conn.commit()
+
+    def create(self, j: dict) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO mpf_jobs (channel_id, user_id, items, place, order_id, created_at, ready_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (j["channel_id"], j["user_id"], j["items"], j["place"], j["order_id"], int(time.time()), j["ready_at"]))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def get(self, jid: int) -> Optional[dict]:
+        row = self.conn.execute("SELECT * FROM mpf_jobs WHERE id = ?", (jid,)).fetchone()
+        return dict(row) if row else None
+
+    def set(self, jid: int, **fields) -> None:
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.conn.execute(f"UPDATE mpf_jobs SET {cols} WHERE id = ?", (*fields.values(), jid))
+        self.conn.commit()
+
+    def queued(self) -> list[dict]:
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM mpf_jobs WHERE status = 'queued' AND message_id IS NOT NULL ORDER BY ready_at")]
+
+
+mpf: Optional[MpfDB] = None
+MPF_LATE = 2 * 3600  # через столько после готовности — повторное напоминание
+
+
+def mpf_link(j: dict) -> str:
+    return f"https://discord.com/channels/{config.GUILD_ID}/{j['channel_id']}/{j['message_id']}"
+
+
+def mpf_embed(j: dict) -> discord.Embed:
+    now = time.time()
+    if j["status"] == "collected":
+        state, color = "📦 Забрано", discord.Color.green()
+    elif j["status"] == "cancelled":
+        state, color = "🚫 Отменено", discord.Color.dark_grey()
+    elif j["ready_at"] <= now:
+        state, color = "✅ Готово — пора забирать!", discord.Color.gold()
+    else:
+        state, color = "⏳ Производится", discord.Color.orange()
+    e = discord.Embed(title=f"🏗️ MPF №{j['id']}", color=color)
+    e.add_field(name="Что", value=j["items"][:1024], inline=False)
+    if j["place"]:
+        e.add_field(name="Где MPF", value=j["place"][:1024], inline=True)
+    e.add_field(name="Поставил", value=f"<@{j['user_id']}>", inline=True)
+    if j["status"] == "queued":
+        e.add_field(name="Готово", value=f"<t:{j['ready_at']}:t> · <t:{j['ready_at']}:R>", inline=True)
+    elif j["closed_at"]:
+        e.add_field(name="Закрыто", value=f"<t:{j['closed_at']}:f>", inline=True)
+    e.add_field(name="Статус", value=state, inline=False)
+    if j["order_id"]:
+        o = db.get(j["order_id"])
+        if o and o["message_id"]:
+            e.add_field(name="Для заказа", value=f"[№{o['id']}]({order_link(o)})", inline=True)
+    return e
+
+
+class MpfButton(discord.ui.DynamicItem[discord.ui.Button], template=r"mpf:(?P<jid>[0-9]+):(?P<act>[a-z]+)"):
+    def __init__(self, jid: int, act: str, label: str = "…", emoji: Optional[str] = None,
+                 style: discord.ButtonStyle = discord.ButtonStyle.secondary) -> None:
+        super().__init__(discord.ui.Button(label=label, emoji=emoji, style=style, custom_id=f"mpf:{jid}:{act}"))
+        self.jid = jid
+        self.act = act
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Button, match, /):
+        return cls(int(match["jid"]), match["act"])
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        j = mpf.get(self.jid)
+        if j is None or j["status"] != "queued":
+            await interaction.response.send_message("Эта запись уже закрыта.", ephemeral=True)
+            return
+        if interaction.user.id != j["user_id"] and not has_any(interaction.user, officer_roles()) \
+                and not is_admin(interaction.user):
+            await no_rights(interaction, "⛔ Это может тот, кто поставил, или офицер.")
+            return
+        status = "collected" if self.act == "got" else "cancelled"
+        mpf.set(j["id"], status=status, closed_at=int(time.time()))
+        await interaction.response.edit_message(embed=mpf_embed(mpf.get(j["id"])), view=None)
+        if status == "collected" and j["order_id"]:
+            await interaction.followup.send(
+                f"📦 Отмечено. Не забудьте нажать «🚚 Отправлено» на заказе №{j['order_id']}, когда повезёте.",
+                ephemeral=True)
+
+
+def mpf_view(j: dict) -> Optional[discord.ui.View]:
+    if j["status"] != "queued":
+        return None
+    view = discord.ui.View(timeout=None)
+    view.add_item(MpfButton(j["id"], "got", "Забрал", "📦", discord.ButtonStyle.success))
+    view.add_item(MpfButton(j["id"], "cancel", "Отменить", "🚫", discord.ButtonStyle.secondary))
+    return view
+
+
+class MpfForm(discord.ui.Modal, title="Поставил в MPF"):
+    items = discord.ui.TextInput(label="Что поставил", style=discord.TextStyle.paragraph, max_length=500,
+                                 placeholder="Например: 9 ящиков 7.62")
+    place = discord.ui.TextInput(label="Где MPF (гекс / город)", max_length=100, required=False,
+                                 placeholder="Например: Deadlands / Abandoned Ward")
+    ready = discord.ui.TextInput(label="Готово через", max_length=20, placeholder="Например: 3ч, 2ч 30м, 45м")
+    order = discord.ui.TextInput(label="Для заказа № (необязательно)", max_length=10, required=False,
+                                 placeholder="Например: 12")
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        from cogs.consulate import parse_duration
+        if not is_worker(interaction.user):
+            await no_rights(interaction)
+            return
+        seconds = parse_duration(self.ready.value)
+        if seconds is None:
+            await interaction.response.send_message("Не понял время. Примеры: `3ч`, `2ч 30м`, `45м`.", ephemeral=True)
+            return
+        order_id = None
+        raw = re.sub(r"\D", "", self.order.value)
+        if raw:
+            o = db.get(int(raw))
+            if o is None or o["status"] not in OPEN:
+                await interaction.response.send_message(f"Открытого заказа №{raw} нет.", ephemeral=True)
+                return
+            order_id = o["id"]
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        jid = mpf.create({"channel_id": interaction.channel.id, "user_id": interaction.user.id,
+                          "items": self.items.value.strip(), "place": self.place.value.strip(),
+                          "order_id": order_id, "ready_at": int(time.time()) + seconds})
+        j = mpf.get(jid)
+        try:
+            message = await interaction.channel.send(embed=mpf_embed(j), view=mpf_view(j),
+                                                     allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException as e:
+            mpf.set(jid, status="cancelled")
+            await interaction.followup.send(f"Не удалось опубликовать: {e.text or e}", ephemeral=True)
+            return
+        mpf.set(jid, message_id=message.id)
+        if order_id:  # заказ переходит в производство, поставивший — исполнитель
+            db.take(order_id, interaction.user.id)
+            o = db.get(order_id)
+            if o["status"] in ("new", "taken"):
+                db.set(order_id, status="production")
+                db.log(order_id, interaction.user.id, "production")
+            o = db.get(order_id)
+            try:
+                channel = interaction.client.get_channel(o["channel_id"])
+                if channel:
+                    await channel.get_partial_message(o["message_id"]).edit(embed=order_embed(o), view=order_view(o))
+            except discord.HTTPException:
+                pass
+        await interaction.followup.send(
+            f"🏗️ Записано: MPF №{jid}, готово <t:{j['ready_at']}:t> (<t:{j['ready_at']}:R>). Напомню в личку.",
+            ephemeral=True)
+
+
+def mpf_list_embed() -> discord.Embed:
+    items = mpf.queued()
+    now = time.time()
+    lines = []
+    for j in items[:25]:
+        first = j["items"].splitlines()[0][:70]
+        mark = "✅" if j["ready_at"] <= now else "⏳"
+        place = f" · {j['place'][:40]}" if j["place"] else ""
+        lines.append(f"{mark} **№{j['id']}** {first}{place} — <@{j['user_id']}> · <t:{j['ready_at']}:R> · "
+                     f"[открыть]({mpf_link(j)})")
+    text = "\n".join(lines) or "В MPF сейчас ничего не стоит."
+    return discord.Embed(title=f"🏗️ Очередь MPF: {len(items)}", description=text[:4000], color=discord.Color.orange())
+
+
+async def mpf_tick(client: discord.Client) -> None:
+    now = time.time()
+    for j in mpf.queued():
+        try:
+            if j["stage"] < 1 and now >= j["ready_at"]:
+                mpf.set(j["id"], stage=1)
+                await dm(client, j["user_id"], f"✅ MPF №{j['id']} готово — пора забирать: {j['items'][:200]}\n"
+                                               f"{mpf_link(j)}")
+                channel = client.get_channel(j["channel_id"])
+                if channel:
+                    await channel.get_partial_message(j["message_id"]).edit(embed=mpf_embed(mpf.get(j["id"])))
+            elif j["stage"] < 2 and now >= j["ready_at"] + MPF_LATE:
+                mpf.set(j["id"], stage=2)
+                channel = client.get_channel(j["channel_id"])
+                if channel:
+                    await channel.send(
+                        f"<@{j['user_id']}> 📦 MPF №{j['id']} готово уже больше 2 часов — заберите, пожалуйста. "
+                        f"{mpf_link(j)}",
+                        allowed_mentions=discord.AllowedMentions(users=True))
+        except Exception:
+            log.exception("Ошибка MPF %s", j["id"])
+
+
 # ---------- панель ----------
 
 class PrefecturePanel(discord.ui.View):
@@ -440,6 +656,20 @@ class PrefecturePanel(discord.ui.View):
         await interaction.response.send_message(embed=list_embed(db.open_orders(), "📋 Открытые заказы"),
                                                 ephemeral=True)
 
+    @discord.ui.button(label="Поставил в MPF", emoji="🏗️", style=discord.ButtonStyle.success, custom_id="pref:mpf",
+                       row=1)
+    async def mpf_add(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not is_worker(interaction.user):
+            await no_rights(interaction)
+            return
+        await interaction.response.send_modal(MpfForm())
+
+    @discord.ui.button(label="Очередь MPF", emoji="⏳", style=discord.ButtonStyle.primary, custom_id="pref:mpflist",
+                       row=1)
+    async def mpf_list(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_message(embed=mpf_list_embed(), ephemeral=True,
+                                                allowed_mentions=discord.AllowedMentions.none())
+
     @discord.ui.button(label="Мои заказы", emoji="🙋", style=discord.ButtonStyle.secondary, custom_id="pref:mine")
     async def mine(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_message(embed=list_embed(db.my_orders(interaction.user.id), "🙋 Ваши заказы"),
@@ -453,7 +683,9 @@ def panel_embed() -> discord.Embed:
             "Сердце производства Легиона.\n\n"
             "➕ **Новый заказ** — что нужно, куда (номер склада или место), срок, приоритет.\n"
             "📋 **Открытые заказы** — что ждёт производства, срочные сверху.\n"
-            "🙋 **Мои заказы** — то, что вы взяли.\n\n"
+            "🙋 **Мои заказы** — то, что вы взяли.\n"
+            "🏗️ **Поставил в MPF** — что, где и когда будет готово (можно для заказа). Бот напомнит забрать.\n"
+            "⏳ **Очередь MPF** — что сейчас производится и что уже ждёт.\n\n"
             "На карточке заказа: 🙋 Беру → 🏭 В производстве → 🚚 Отправлено → ✅ Доставлено.\n"
             "Создавать и выполнять заказы могут Фабрумы и офицеры. Выполненные заказы идут в профиль.\n\n"
             "*Senatus Populusque Legionis*"
@@ -468,9 +700,11 @@ class Prefecture(commands.Cog):
 
     async def cog_load(self) -> None:
         self.ticker.start()
+        self.mpf_ticker.start()
 
     async def cog_unload(self) -> None:
         self.ticker.cancel()
+        self.mpf_ticker.cancel()
 
     @tasks.loop(minutes=5)
     async def ticker(self) -> None:
@@ -489,9 +723,25 @@ class Prefecture(commands.Cog):
                 except discord.HTTPException:
                     pass
 
+    @tasks.loop(minutes=1)
+    async def mpf_ticker(self) -> None:
+        await mpf_tick(self.bot)
+
     @ticker.before_loop
     async def before_ticker(self) -> None:
         await self.bot.wait_until_ready()
+
+    @mpf_ticker.before_loop
+    async def before_mpf(self) -> None:
+        await self.bot.wait_until_ready()
+
+    @app_commands.command(name="mpf", description="Записать, что поставлено в MPF (Фабрумы и офицеры)")
+    @app_commands.guild_only()
+    async def mpf_cmd(self, interaction: discord.Interaction) -> None:
+        if not is_worker(interaction.user):
+            await no_rights(interaction)
+            return
+        await interaction.response.send_modal(MpfForm())
 
     @app_commands.command(name="заказ", description="Новый производственный заказ (Фабрумы и офицеры)")
     @app_commands.guild_only()
@@ -523,8 +773,9 @@ class Prefecture(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
-    global db
+    global db, mpf
     db = DB(DB_PATH)
-    bot.add_dynamic_items(OrderButton)
+    mpf = MpfDB(db.conn)
+    bot.add_dynamic_items(OrderButton, MpfButton)
     bot.add_view(PrefecturePanel())
     await bot.add_cog(Prefecture(bot))
