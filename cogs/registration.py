@@ -475,12 +475,33 @@ class ReviewView(discord.ui.View):
         await interaction.edit_original_response(embed=embed, view=None)
         log.info("Заявка %s принята (%s)", applicant_id, interaction.user)
 
+        if kind == "member":
+            await announce_new_legionary(interaction.client, member)
+
     @discord.ui.button(label="Отклонить", emoji="❌", style=discord.ButtonStyle.danger, custom_id="prok:reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         applicant_id = await self._get_pending(interaction)
         if applicant_id is None:
             return
         await interaction.response.send_modal(RejectModal(interaction.message, applicant_id))
+
+
+async def announce_new_legionary(client: discord.Client, member: discord.Member) -> None:
+    """Объявление в чате Легиона о новом легионере."""
+    if not config.LEGION_CHAT_CHANNEL_ID:
+        return
+    try:
+        channel = client.get_channel(config.LEGION_CHAT_CHANNEL_ID) or await client.fetch_channel(
+            config.LEGION_CHAT_CHANNEL_ID
+        )
+        await channel.send(
+            "🏛️ **ПОПОЛНЕНИЕ РЯДОВ ЛЕГИОНА!**\n\n"
+            f"{member.mention} принят в ряды легионеров.\n\n"
+            "Добро пожаловать в Легион!",
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+    except discord.HTTPException as e:
+        log.error("Не удалось объявить о новом легионере %s: %s", member, e)
 
 
 # ---------- команды ----------
