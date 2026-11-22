@@ -524,7 +524,7 @@ class ConsulatePanel(discord.ui.View):
             return
         await interaction.response.send_modal(OperationForm())
 
-    @discord.ui.button(label="Идущие голосования", emoji="📋", style=discord.ButtonStyle.primary, custom_id="cons:active")
+    @discord.ui.button(label="Текущие голосования", emoji="📋", style=discord.ButtonStyle.primary, custom_id="cons:active")
     async def active(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         polls = db.open_polls()
         if not polls:
@@ -539,7 +539,7 @@ class ConsulatePanel(discord.ui.View):
                 f"до <t:{p['ends_at']}:R> · [открыть]({link})"
             )
         embed = discord.Embed(
-            title=f"📋 Идущие голосования: {len(polls)}",
+            title=f"📋 Текущие голосования: {len(polls)}",
             description="\n\n".join(lines)[:4000],
             color=discord.Color.dark_red(),
         )
@@ -559,7 +559,7 @@ def panel_embed() -> discord.Embed:
             "после утверждения Принцепсом.\n"
             "⚔️ **Новая операция** — время, место, задача; кнопки «Приду / Опоздаю / Не приду», "
             "напоминание участникам за 30 минут в чате Легиона.\n"
-            "📋 **Идущие голосования** — список с числом проголосовавших и временем до конца.\n\n"
+            "📋 **Текущие голосования** — список с числом проголосовавших и временем до конца.\n\n"
             "Журнал Консулата ведётся в «Архивариуме».\n\n"
             "*Senatus Populusque Legionis*"
         ),
