@@ -349,6 +349,9 @@ def gather(user_id: int) -> dict:
         from cogs import prefecture
         if prefecture.db is not None:
             s["orders_done"] = prefecture.db.delivered_count(user_id)
+        from cogs import industry
+        if industry.db is not None:
+            s["services"] = industry.db.services_by(user_id)
     except Exception:
         log.exception("Профиль: заказы")
     try:
@@ -490,10 +493,12 @@ def profile_embed(member: discord.Member, viewer: discord.abc.User) -> discord.E
         if signed or s.get("ops_came") or s.get("ops_led"):
             e.add_field(name="⚔️ Операции", value=ops, inline=False)
 
-    if s.get("wh_created") or s.get("wh_refreshes") or s.get("orders_done"):
+    if s.get("wh_created") or s.get("wh_refreshes") or s.get("orders_done") or s.get("services"):
         logi = f"Складов создал: {s.get('wh_created', 0)}\nОбновлений складов: {s.get('wh_refreshes', 0)}"
         if s.get("orders_done"):
             logi += f"\nЗаказов выполнил: {s['orders_done']}"
+        if s.get("services"):
+            logi += f"\nОбслуживаний объектов: {s['services']}"
         e.add_field(name="🚚 Логистика и производство", value=logi, inline=True)
 
     civic = []

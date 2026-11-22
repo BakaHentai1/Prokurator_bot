@@ -157,6 +157,11 @@ def is_worker(member: discord.abc.User) -> bool:
     return is_admin(member) or has_any(member, roles)
 
 
+def is_officer(member: discord.abc.User) -> bool:
+    """Офицеры (Центурион и выше) и администраторы."""
+    return is_admin(member) or has_any(member, officer_roles())
+
+
 def can_cancel(member: discord.abc.User, o: dict) -> bool:
     return member.id == o["author_id"] or is_admin(member) or has_any(member, officer_roles())
 
@@ -384,8 +389,8 @@ class OrderSetupView(discord.ui.View):
     async def publish(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if self.done:
             return
-        if not is_worker(interaction.user):
-            await no_rights(interaction)
+        if not is_officer(interaction.user):
+            await no_rights(interaction, "⛔ Заказы создают офицеры.")
             return
         self.done = True
         self.stop()
@@ -646,8 +651,8 @@ class PrefecturePanel(discord.ui.View):
 
     @discord.ui.button(label="Новый заказ", emoji="➕", style=discord.ButtonStyle.success, custom_id="pref:new")
     async def new(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if not is_worker(interaction.user):
-            await no_rights(interaction)
+        if not is_officer(interaction.user):
+            await no_rights(interaction, "⛔ Заказы создают офицеры. Фабрумы берут их кнопкой «Беру».")
             return
         await interaction.response.send_modal(OrderForm())
 
@@ -675,6 +680,37 @@ class PrefecturePanel(discord.ui.View):
         await interaction.response.send_message(embed=list_embed(db.my_orders(interaction.user.id), "🙋 Ваши заказы"),
                                                 ephemeral=True)
 
+    @discord.ui.button(label="Объекты", emoji="🏭", style=discord.ButtonStyle.primary, custom_id="pref:fac", row=2)
+    async def facilities(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        from cogs.industry import fac_list_embed
+        await interaction.response.send_message(embed=fac_list_embed(), ephemeral=True,
+                                                allowed_mentions=discord.AllowedMentions.none())
+
+    @discord.ui.button(label="Новый объект", emoji="➕", style=discord.ButtonStyle.secondary, custom_id="pref:facnew",
+                       row=2)
+    async def facility_new(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        from cogs.industry import FacilityForm
+        if not is_officer(interaction.user):
+            await no_rights(interaction, "⛔ Объекты добавляют офицеры.")
+            return
+        await interaction.response.send_modal(FacilityForm())
+
+    @discord.ui.button(label="Сбор на добычу", emoji="⛏️", style=discord.ButtonStyle.success, custom_id="pref:gather",
+                       row=3)
+    async def gathering(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        from cogs.industry import GatheringForm
+        if not is_officer(interaction.user):
+            await no_rights(interaction, "⛔ Сборы объявляют офицеры.")
+            return
+        await interaction.response.send_modal(GatheringForm())
+
+    @discord.ui.button(label="Ресурсы", emoji="📦", style=discord.ButtonStyle.primary, custom_id="pref:res", row=3)
+    async def resources(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        from cogs.industry import ResourceView, res_embed
+        view = ResourceView(interaction.user)
+        await interaction.response.send_message(embed=res_embed(), view=view if view.children else None,
+                                                ephemeral=True)
+
 
 def panel_embed() -> discord.Embed:
     return discord.Embed(
@@ -685,9 +721,13 @@ def panel_embed() -> discord.Embed:
             "📋 **Открытые заказы** — что ждёт производства, срочные сверху.\n"
             "🙋 **Мои заказы** — то, что вы взяли.\n"
             "🏗️ **Поставил в MPF** — что, где и когда будет готово (можно для заказа). Бот напомнит забрать.\n"
-            "⏳ **Очередь MPF** — что сейчас производится и что уже ждёт.\n\n"
+            "⏳ **Очередь MPF** — что сейчас производится и что уже ждёт.\n"
+            "🏭 **Объекты** — фабрики, заводы, генераторы и когда их обслуживать; ➕ добавляют офицеры.\n"
+            "⛏️ **Сбор на добычу** — офицер объявляет, легионеры жмут «Иду», за 15 минут напоминание.\n"
+            "📦 **Ресурсы** — сколько скрапа, компонентов, матов и чего не хватает.\n\n"
             "На карточке заказа: 🙋 Беру → 🏭 В производстве → 🚚 Отправлено → ✅ Доставлено.\n"
-            "Создавать и выполнять заказы могут Фабрумы и офицеры. Выполненные заказы идут в профиль.\n\n"
+            "**Права:** офицеры создают заказы, объекты, сборы и ставят цели по ресурсам. "
+            "Фабрумы берут и ведут заказы, ставят MPF, обслуживают объекты и обновляют ресурсы.\n\n"
             "*Senatus Populusque Legionis*"
         ),
         color=discord.Color.orange(),
@@ -743,11 +783,11 @@ class Prefecture(commands.Cog):
             return
         await interaction.response.send_modal(MpfForm())
 
-    @app_commands.command(name="заказ", description="Новый производственный заказ (Фабрумы и офицеры)")
+    @app_commands.command(name="заказ", description="Новый производственный заказ (офицеры)")
     @app_commands.guild_only()
     async def new_order(self, interaction: discord.Interaction) -> None:
-        if not is_worker(interaction.user):
-            await no_rights(interaction)
+        if not is_officer(interaction.user):
+            await no_rights(interaction, "⛔ Заказы создают офицеры. Фабрумы берут их кнопкой «Беру».")
             return
         await interaction.response.send_modal(OrderForm())
 
