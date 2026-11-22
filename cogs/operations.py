@@ -9,6 +9,7 @@
 - За 30 минут до начала бот упоминает тех, кто придёт или опоздает, в чате Легиона
   (LEGION_CHAT_CHANNEL_ID).
 - Через 3 часа после начала запись закрывается, итоговый список уходит в «Архивариум».
+- После начала командир отмечает реальную явку кнопкой «Явка» — она идёт в профиль.
 - Данные хранятся в отдельном файле data/operations.db.
 """
 import logging
@@ -63,6 +64,13 @@ class DB:
                 status      TEXT    NOT NULL DEFAULT 'open',
                 reminded    INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS attendance (
+                op_id     INTEGER NOT NULL,
+                user_id   INTEGER NOT NULL,
+                marked_by INTEGER NOT NULL,
+                ts        INTEGER NOT NULL,
+                PRIMARY KEY (op_id, user_id)
+            );
             CREATE TABLE IF NOT EXISTS responses (
                 op_id   INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -106,6 +114,17 @@ class DB:
         )
         self.conn.commit()
         return row["answer"] if row else None
+
+    def set_attendance(self, oid: int, user_ids: list[int], marked_by: int) -> None:
+        self.conn.execute("DELETE FROM attendance WHERE op_id = ?", (oid,))
+        now = int(time.time())
+        for uid in user_ids:
+            self.conn.execute("INSERT OR IGNORE INTO attendance VALUES (?, ?, ?, ?)", (oid, uid, marked_by, now))
+        self.conn.commit()
+
+    def attended(self, oid: int) -> list[int]:
+        return [r["user_id"] for r in self.conn.execute("SELECT user_id FROM attendance WHERE op_id = ? ORDER BY ts",
+                                                         (oid,))]
 
     def roster(self, oid: int) -> dict[str, list[int]]:
         result: dict[str, list[int]] = {key: [] for key in ANSWERS}
@@ -198,6 +217,12 @@ def op_embed(o: dict) -> discord.Embed:
         if len(value) > 1024:
             value = value[:1000].rsplit(" ", 1)[0] + " …"
         e.add_field(name=f"{emoji} {plural} ({len(people)})", value=value, inline=False)
+    came = db.attended(o["id"])
+    if came:
+        value = " ".join(f"<@{u}>" for u in came)
+        if len(value) > 1024:
+            value = value[:1000].rsplit(" ", 1)[0] + " …"
+        e.add_field(name=f"🎖️ Пришли ({len(came)})", value=value, inline=False)
     if o["image"]:
         e.set_image(url=o["image"])
     if status == "open":
@@ -218,7 +243,9 @@ class OpButton(discord.ui.DynamicItem[discord.ui.Button], template=r"op:(?P<oid>
         return cls(int(match["oid"]), match["act"])
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        if self.act == "cancel":
+        if self.act == "att":
+            await open_attendance(interaction, self.oid)
+        elif self.act == "cancel":
             await cancel_op(interaction, self.oid)
         elif self.act in ANSWERS:
             await respond(interaction, self.oid, self.act)
@@ -228,8 +255,107 @@ def op_view(o: dict) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     for key, (emoji, label, _, style) in ANSWERS.items():
         view.add_item(OpButton(o["id"], key, label, emoji, style, row=0))
+    view.add_item(OpButton(o["id"], "att", "Явка", "📋", discord.ButtonStyle.secondary, row=1))
     view.add_item(OpButton(o["id"], "cancel", "Отменить операцию", "🚫", discord.ButtonStyle.danger, row=1))
     return view
+
+
+def done_view(o: dict) -> discord.ui.View:
+    """После закрытия записи остаётся только кнопка явки."""
+    view = discord.ui.View(timeout=None)
+    view.add_item(OpButton(o["id"], "att", "Явка", "📋", discord.ButtonStyle.secondary))
+    return view
+
+
+# ---------- явка ----------
+
+def can_mark(member: discord.abc.User, o: dict) -> bool:
+    return member.id == o["creator_id"] or can_create_op(member)
+
+
+class AttendanceView(discord.ui.View):
+    """Командир отмечает, кто реально пришёл."""
+
+    def __init__(self, o: dict, message: discord.Message) -> None:
+        super().__init__(timeout=900)
+        self.oid = o["id"]
+        self.message = message
+        roster = db.roster(o["id"])
+        signed = roster["going"] + roster["late"]
+        already = set(db.attended(o["id"]))
+        self.chosen: set[int] = set(already) if already else set(signed)
+        self.extra: set[int] = {u for u in already if u not in signed}
+        if signed:
+            names = {}
+            guild = message.guild
+            for uid in signed[:25]:
+                m = guild.get_member(uid) if guild else None
+                names[uid] = m.display_name if m else str(uid)
+            self.signed_select.options = [
+                discord.SelectOption(label=names[uid][:100], value=str(uid), default=uid in self.chosen,
+                                     emoji="✅" if uid in roster["going"] else "⏰")
+                for uid in signed[:25]
+            ]
+            self.signed_select.max_values = len(self.signed_select.options)
+        else:
+            self.remove_item(self.signed_select)
+
+    def summary(self) -> str:
+        people = sorted(self.chosen | self.extra)
+        listed = " ".join(f"<@{u}>" for u in people) or "никто"
+        return (
+            "📋 **Явка на операцию.** Отметьте записавшихся, кто реально пришёл; "
+            "пришедших без записи добавьте во втором списке. Затем «Сохранить».\n"
+            f"Сейчас отмечено ({len(people)}): {listed}"
+        )[:2000]
+
+    @discord.ui.select(placeholder="Пришли из записавшихся", min_values=0, options=[discord.SelectOption(label="—")],
+                       row=0)
+    async def signed_select(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
+        self.chosen = {int(v) for v in select.values}
+        for opt in select.options:
+            opt.default = opt.value in select.values
+        await interaction.response.edit_message(content=self.summary(), view=self)
+
+    @discord.ui.select(cls=discord.ui.UserSelect, placeholder="Пришли без записи (необязательно)", min_values=0,
+                       max_values=25, row=1)
+    async def extra_select(self, interaction: discord.Interaction, select: discord.ui.UserSelect) -> None:
+        self.extra = {u.id for u in select.values if not u.bot}
+        await interaction.response.edit_message(content=self.summary(), view=self)
+
+    @discord.ui.button(label="Сохранить явку", emoji="💾", style=discord.ButtonStyle.success, row=2)
+    async def save(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        o = db.get(self.oid)
+        if o is None or not can_mark(interaction.user, o):
+            await interaction.response.send_message("⛔ Недостаточно прав.", ephemeral=True)
+            return
+        people = sorted(self.chosen | self.extra)
+        db.set_attendance(self.oid, people, interaction.user.id)
+        self.stop()
+        await interaction.response.edit_message(content=f"✅ Явка сохранена: {len(people)} чел.", view=None)
+        o = db.get(self.oid)
+        try:
+            await self.message.edit(embed=op_embed(o))
+        except discord.HTTPException:
+            pass
+        await archive(interaction.client,
+                      f"📋 <t:{int(time.time())}:f> · {interaction.user.mention} отметил явку на операции №{o['id']} "
+                      f"«{o['title']}»: {len(people)} чел. · {op_link(o)}")
+
+
+async def open_attendance(interaction: discord.Interaction, oid: int) -> None:
+    o = db.get(oid)
+    if o is None or o["status"] == "cancelled":
+        await interaction.response.send_message("Операция отменена.", ephemeral=True)
+        return
+    if not can_mark(interaction.user, o):
+        await interaction.response.send_message("⛔ Явку отмечает командир операции.", ephemeral=True)
+        return
+    if time.time() < o["starts_at"] - 15 * 60:
+        await interaction.response.send_message("Явку можно отметить ближе к началу операции.", ephemeral=True)
+        return
+    view = AttendanceView(o, interaction.message)
+    await interaction.response.send_message(view.summary(), view=view, ephemeral=True)
 
 
 # ---------- действия ----------
@@ -313,7 +439,7 @@ async def finish(client: discord.Client, o: dict) -> None:
     o = db.get(o["id"])
     try:
         channel = client.get_channel(o["channel_id"]) or await client.fetch_channel(o["channel_id"])
-        await channel.get_partial_message(o["message_id"]).edit(embed=op_embed(o), view=None)
+        await channel.get_partial_message(o["message_id"]).edit(embed=op_embed(o), view=done_view(o))
     except discord.HTTPException as e:
         log.error("Не удалось закрыть пост операции %s: %s", o["id"], e)
     await archive(client, f"📜 Итоги записи на операцию №{o['id']} · {op_link(o)}", op_embed(o))

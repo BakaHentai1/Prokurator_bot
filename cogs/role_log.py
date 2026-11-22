@@ -2,7 +2,7 @@
 
 Берёт данные из журнала аудита сервера, поэтому боту нужно право
 «Просматривать журнал аудита». Смены ролей самим ботом (по заявкам, выборам)
-тоже записываются — с причиной.
+тоже записываются — с причиной. Смены званий сохраняются для истории в профиле.
 """
 import logging
 import time
@@ -49,6 +49,17 @@ class RoleLog(commands.Cog):
             lines.append(f"➖ снял: {roles_text(removed)}")
         if entry.reason:
             lines.append(f"📝 причина: {entry.reason}")
+
+        # История званий для профиля
+        try:
+            from cogs import profiles
+            if profiles.db is not None and entry.target:
+                for r in added:
+                    profiles.db.add_role_event(entry.target.id, r.id, "add", entry.user_id)
+                for r in removed:
+                    profiles.db.add_role_event(entry.target.id, r.id, "remove", entry.user_id)
+        except Exception:
+            log.exception("Не удалось записать историю званий")
 
         channel = self.bot.get_channel(config.ARCHIVE_CHANNEL_ID)
         if channel is None:
