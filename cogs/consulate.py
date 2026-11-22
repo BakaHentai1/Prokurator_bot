@@ -508,6 +508,14 @@ class ConsulatePanel(discord.ui.View):
             return
         await interaction.response.send_modal(EdictForm())
 
+    @discord.ui.button(label="Выборы", emoji="🏛️", style=discord.ButtonStyle.secondary, custom_id="cons:elect")
+    async def new_election(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        from cogs.elections import ElectionForm  # модуль выборов загружается после этого
+        if not can_create(interaction.user):
+            await interaction.response.send_message("⛔ Выборы объявляют Принцепс, Консулы и Сенат.", ephemeral=True)
+            return
+        await interaction.response.send_modal(ElectionForm())
+
     @discord.ui.button(label="Новая операция", emoji="⚔️", style=discord.ButtonStyle.danger, custom_id="cons:op")
     async def new_op(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         from cogs.operations import OperationForm, can_create_op  # модуль операций загружается после этого
@@ -547,6 +555,8 @@ def panel_embed() -> discord.Embed:
             "и с кнопкой «Принято».\n"
             "🗳️ **Новое голосование** — вопрос, варианты, срок; тайное или открытое. "
             "Итоги бот опубликует сам.\n"
+            "🏛️ **Выборы** — выдвижение кандидатов, тайное голосование, итоги и выдача роли "
+            "после утверждения Принцепсом.\n"
             "⚔️ **Новая операция** — время, место, задача; кнопки «Приду / Опоздаю / Не приду», "
             "напоминание участникам за 30 минут в чате Легиона.\n"
             "📋 **Идущие голосования** — список с числом проголосовавших и временем до конца.\n\n"
