@@ -24,7 +24,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import config
-from cogs.consulate import archive, is_admin, has_any, officer_roles, parse_duration
+from cogs.consulate import archive, can_create, is_admin, parse_duration
 
 log = logging.getLogger("operations")
 
@@ -167,7 +167,8 @@ def parse_start(text: str) -> Optional[int]:
 # ---------- права ----------
 
 def can_create_op(member: discord.abc.User) -> bool:
-    return is_admin(member) or has_any(member, officer_roles())
+    """Операции объявляют Принцепс, Консулы и Сенат (и администраторы)."""
+    return can_create(member)
 
 
 # ---------- оформление ----------
@@ -339,7 +340,7 @@ class OperationForm(discord.ui.Modal, title="Новая операция"):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not can_create_op(interaction.user):
-            await interaction.response.send_message("⛔ Операции объявляют офицеры.", ephemeral=True)
+            await interaction.response.send_message("⛔ Операции объявляют Принцепс, Консулы и Сенат.", ephemeral=True)
             return
         starts_at = parse_start(self.start.value)
         if starts_at is None:
@@ -426,7 +427,7 @@ class Operations(commands.Cog):
     @app_commands.guild_only()
     async def new_op(self, interaction: discord.Interaction) -> None:
         if not can_create_op(interaction.user):
-            await interaction.response.send_message("⛔ Операции объявляют офицеры.", ephemeral=True)
+            await interaction.response.send_message("⛔ Операции объявляют Принцепс, Консулы и Сенат.", ephemeral=True)
             return
         await interaction.response.send_modal(OperationForm())
 
