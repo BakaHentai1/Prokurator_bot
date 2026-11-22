@@ -127,7 +127,9 @@ async def deny(interaction: discord.Interaction) -> None:
 # ---------- чёрный список ----------
 
 def normalize(nick: str) -> str:
-    return re.sub(r"[\s\[\]()_\-.|]", "", nick).casefold()
+    """Ник без тегов полка в скобках, пробелов и знаков: «[KGB] Spy_Master [7th]» → «spymaster»."""
+    nick = re.sub(r"\[[^\]]*\]|\([^)]*\)|\{[^}]*\}", "", nick)
+    return re.sub(r"[\s_\-.|]", "", nick).casefold()
 
 
 def blacklist_matches(user_id: Optional[int] = None, nickname: str = "") -> list[dict]:
