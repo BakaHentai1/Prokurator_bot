@@ -22,7 +22,7 @@ from typing import Optional
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import config
 
@@ -95,9 +95,28 @@ class DB:
                 reason   TEXT    NOT NULL DEFAULT '',
                 ts       INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS activity (
+                user_id      INTEGER PRIMARY KEY,
+                last_message INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
             """
         )
+        self.conn.execute("INSERT OR IGNORE INTO meta VALUES ('tracking_since', ?)", (str(int(time.time())),))
         self.conn.commit()
+
+    # активность (только время последнего сообщения, без текста)
+    def touch_messages(self, stamps: dict[int, int]) -> None:
+        for uid, ts in stamps.items():
+            self.conn.execute(
+                "INSERT INTO activity (user_id, last_message) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET last_message = MAX(last_message, excluded.last_message)",
+                (uid, ts))
+        self.conn.commit()
+
+    def tracking_since(self) -> int:
+        row = self.conn.execute("SELECT value FROM meta WHERE key = 'tracking_since'").fetchone()
+        return int(row[0]) if row else int(time.time())
 
     # профиль
     def get(self, user_id: int) -> dict:
@@ -609,6 +628,23 @@ class Profiles(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.voice_start: dict[int, float] = {}
+        self.message_stamps: dict[int, int] = {}
+
+    async def cog_load(self) -> None:
+        self.flush_activity.start()
+
+    @tasks.loop(minutes=5)
+    async def flush_activity(self) -> None:
+        if self.message_stamps:
+            stamps, self.message_stamps = self.message_stamps, {}
+            db.touch_messages(stamps)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        """Запоминаем только время последнего сообщения — текст не читается и не хранится."""
+        if message.author.bot or message.guild is None or message.guild.id != config.GUILD_ID:
+            return
+        self.message_stamps[message.author.id] = int(message.created_at.timestamp())
 
     # --- голосовая активность ---
     def _counts(self, state: Optional[discord.VoiceState]) -> bool:
@@ -644,6 +680,10 @@ class Profiles(commands.Cog):
                 db.add_voice(member.id, start, time.time())
 
     async def cog_unload(self) -> None:
+        self.flush_activity.cancel()
+        if self.message_stamps:
+            db.touch_messages(self.message_stamps)
+            self.message_stamps = {}
         now = time.time()
         for uid, start in self.voice_start.items():
             db.add_voice(uid, start, now)

@@ -900,6 +900,27 @@ class SenatePanel(discord.ui.View):
                                 description="\n\n".join(lines)[:4000], color=discord.Color.dark_gold()),
             ephemeral=True)
 
+    @discord.ui.button(label="Кадры", emoji="👥", style=discord.ButtonStyle.primary, custom_id="sen:staff", row=2)
+    async def staff(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not is_officer(interaction.user):
+            await deny(interaction)
+            return
+        from cogs.reports import personnel_embeds
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.followup.send(embeds=personnel_embeds(interaction.guild), ephemeral=True,
+                                        allowed_mentions=discord.AllowedMentions.none())
+
+    @discord.ui.button(label="Доклад за неделю", emoji="📊", style=discord.ButtonStyle.secondary,
+                       custom_id="sen:report", row=2)
+    async def report(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not is_officer(interaction.user):
+            await deny(interaction)
+            return
+        from cogs.reports import weekly_embed
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.followup.send(embed=weekly_embed(interaction.guild), ephemeral=True,
+                                        allowed_mentions=discord.AllowedMentions.none())
+
     @discord.ui.button(label="Выговоры", emoji="⚠️", style=discord.ButtonStyle.secondary, custom_id="sen:warnings")
     async def warnings(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not is_officer(interaction.user):
@@ -930,7 +951,9 @@ def panel_embed() -> discord.Embed:
             "⚠️ **Выговоры** — у кого сколько действующих выговоров.\n"
             "🎖️ **Представление к повышению** — один или несколько кандидатов в звание; офицеры голосуют, "
             "Принцепс утверждает, бот меняет роли и публикует приказ.\n"
-            "📋 **Открытые представления** — что сейчас на рассмотрении.\n\n"
+            "📋 **Открытые представления** — что сейчас на рассмотрении.\n"
+            "👥 **Кадры** — состав по званиям, отпуска, неактивные 14+ дней.\n"
+            "📊 **Доклад за неделю** — сводка (приходит сам каждый понедельник в 10:00).\n\n"
             "**Права:** смотреть — все офицеры; выговоры — Принцепс, Консулы, Легаты; "
             "пополнять чёрный список — Принцепс, Консулы, Легаты, Центурионы; заметки, снятие выговоров "
             "и удаление из списка — Принцепс и Консулы.\n\n"
