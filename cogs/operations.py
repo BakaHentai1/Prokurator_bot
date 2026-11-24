@@ -405,11 +405,12 @@ async def cancel_op(interaction: discord.Interaction, oid: int) -> None:
     if notify:
         channel = await legion_chat(interaction.client, o["channel_id"])
         if channel:
-            await channel.send(
+            from cogs.janitor import later
+            later(await channel.send(
                 " ".join(f"<@{u}>" for u in notify)
                 + f"\n🚫 Операция **{o['title']}** (<t:{o['starts_at']}:f>) **отменена**. {op_link(o)}",
                 allowed_mentions=discord.AllowedMentions(users=True),
-            )
+            ), 6 * 3600)
     await archive(interaction.client,
                   f"🚫 <t:{int(time.time())}:f> · {interaction.user.mention} отменил операцию №{oid} "
                   f"«{o['title']}» · {op_link(o)}")
@@ -432,7 +433,9 @@ async def remind(client: discord.Client, o: dict) -> None:
         text = mentions + "\n" + text
     else:
         text += "\nПока никто не записался."
-    await channel.send(text[:2000], allowed_mentions=discord.AllowedMentions(users=True))
+    from cogs.janitor import later
+    later(await channel.send(text[:2000], allowed_mentions=discord.AllowedMentions(users=True)),
+          max(int(o["starts_at"] - time.time()), 0) + 2 * 3600)  # уберём через 2 ч после начала
     log.info("Напоминание об операции %s отправлено", o["id"])
 
 

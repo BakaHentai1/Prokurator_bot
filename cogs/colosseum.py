@@ -411,8 +411,9 @@ class InviteView(discord.ui.View):
         channel = colosseum_channel(self.client) or self.thread.parent
         if channel:
             try:
-                await channel.send(f"🕯️ **{self.b.display_name}** не явился на вызов **{self.a.display_name}**. "
-                                   "Арена ждала напрасно.")
+                from cogs.janitor import later
+                later(await channel.send(f"🕯️ **{self.b.display_name}** не явился на вызов "
+                                         f"**{self.a.display_name}**. Арена ждала напрасно."), 3600)
             except discord.HTTPException:
                 pass
         await close_thread(self.thread, 0)
@@ -440,8 +441,9 @@ class InviteView(discord.ui.View):
         await interaction.response.edit_message(content="🏃 Вызов отклонён.", view=None)
         channel = colosseum_channel(interaction.client) or self.thread.parent
         if channel:
-            await channel.send(f"🏃 **{self.b.display_name}** струсил перед **{self.a.display_name}**. "
-                               "Толпа свистит! 🍅")
+            from cogs.janitor import later
+            later(await channel.send(f"🏃 **{self.b.display_name}** струсил перед **{self.a.display_name}**. "
+                                     "Толпа свистит! 🍅"), 3600)
         asyncio.create_task(close_thread(self.thread, 5))
 
 
@@ -1029,7 +1031,8 @@ class Colosseum(commands.Cog):
                 db.x("UPDATE tournaments SET status = 'cancelled' WHERE id = ?", (t["id"],))
                 await refresh_t(self.bot, t["id"])
                 if channel:
-                    await channel.send(f"🚫 Турнир «{t['name']}» не состоялся — мало бойцов.")
+                    from cogs.janitor import later
+                    later(await channel.send(f"🚫 Турнир «{t['name']}» не состоялся — мало бойцов."), 3 * 3600)
                 continue
             try:
                 await start_round(self.bot, t["id"], players)

@@ -537,11 +537,12 @@ async def gat_tick(client: discord.Client) -> None:
                 going = db.gat_people(g["id"], "going")
                 channel = client.get_channel(g["channel_id"])
                 if channel and going:
-                    await channel.send(
+                    from cogs.janitor import later
+                    later(await channel.send(
                         " ".join(f"<@{u}>" for u in going)
                         + f"\n⛏️ Сбор на добычу «{g['what']}» начинается <t:{g['starts_at']}:R>"
                         + (f" · {g['place']}" if g["place"] else "") + f"\n{link(g)}",
-                        allowed_mentions=discord.AllowedMentions(users=True))
+                        allowed_mentions=discord.AllowedMentions(users=True)), 2 * 3600)
             if now >= g["starts_at"] + 3 * 3600:
                 db.gat_set(g["id"], status="done")
                 channel = client.get_channel(g["channel_id"])

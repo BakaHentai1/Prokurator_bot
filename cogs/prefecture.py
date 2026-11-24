@@ -664,10 +664,11 @@ async def mpf_tick(client: discord.Client) -> None:
                 mpf.set(j["id"], stage=2)
                 channel = client.get_channel(j["channel_id"])
                 if channel:
-                    await channel.send(
+                    from cogs.janitor import later
+                    later(await channel.send(
                         f"<@{j['user_id']}> 📦 MPF №{j['id']} готово уже больше 2 часов — заберите, пожалуйста. "
                         f"{mpf_link(j)}",
-                        allowed_mentions=discord.AllowedMentions(users=True))
+                        allowed_mentions=discord.AllowedMentions(users=True)), 6 * 3600)
         except Exception:
             log.exception("Ошибка MPF %s", j["id"])
 
