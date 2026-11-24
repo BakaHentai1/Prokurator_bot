@@ -3,13 +3,13 @@
 /профиль [участник] или долгое нажатие на человека → Приложения → «Профиль».
 
 В профиле: звание и история званий, ник, специализация, часовой пояс, даты службы,
-статус (отпуск), явка на операции, логистика, вклад в Консулат, выборы, награды,
+статус (брейквар), явка на операции, логистика, вклад в Консулат, выборы, награды,
 достижения, благодарности, голосовая активность, склады.
 
 Команды:
   /наградить, /награда_снять — награды (Принцепс, Консулы, Сенат, Легаты)
   /спасибо — благодарность легионеру (не чаще раза в сутки)
-  /отпуск, /вернулся, /отпуска — отсутствие
+  /брейквар, /вернулся, /брейквары — отсутствие (брейквар)
 Данные — в отдельном файле data/profiles.db.
 """
 import logging
@@ -355,6 +355,12 @@ def gather(user_id: int) -> dict:
     except Exception:
         log.exception("Профиль: заказы")
     try:
+        from cogs import legion
+        if legion.db is not None:
+            s["jobs_done"] = legion.jobs_done(user_id)
+    except Exception:
+        log.exception("Профиль: задания")
+    try:
         from cogs import tasks as task_mod
         if task_mod.db is not None:
             s["tasks_done"] = task_mod.db.done_count(user_id)
@@ -440,7 +446,7 @@ def profile_embed(member: discord.Member, viewer: discord.abc.User) -> discord.E
 
     vac = db.vacation(member.id)
     if vac:
-        e.description = (f"🏖️ **В отпуске до <t:{vac['until']}:D>**"
+        e.description = (f"🏖️ **Брейквар до <t:{vac['until']}:D>**"
                          + (f" — {vac['reason']}" if vac["reason"] else ""))
 
     e.add_field(name="Звание", value=rank_of(member), inline=True)
@@ -522,6 +528,8 @@ def profile_embed(member: discord.Member, viewer: discord.abc.User) -> discord.E
         made.append(f"Выдвигался на выборах: {s['elect_ran']}")
     if s.get("tasks_done"):
         made.append(f"Поручений выполнил: {s['tasks_done']}")
+    if s.get("jobs_done"):
+        made.append(f"Заданий выполнил: {s['jobs_done']}")
     if made:
         e.add_field(name="📜 Вклад в Консулат", value="\n".join(made), inline=True)
 
@@ -790,7 +798,7 @@ class Profiles(commands.Cog):
         )
 
     # --- отпуск ---
-    @app_commands.command(name="отпуск", description="Отметить, что вы отсутствуете")
+    @app_commands.command(name="брейквар", description="Уйти в брейквар (отсутствие)")
     @app_commands.describe(до="До какого числа: 30.11, или срок: 7д, 2 недели", причина="Необязательно")
     @app_commands.guild_only()
     async def vacation(self, interaction: discord.Interaction, до: str, причина: Optional[str] = None) -> None:
@@ -802,17 +810,17 @@ class Profiles(commands.Cog):
             return
         db.set_vacation(interaction.user.id, until, (причина or "")[:200])
         await interaction.response.send_message(
-            f"🏖️ Отмечено: вы в отпуске до <t:{until}:D>. Вернётесь раньше — `/вернулся`.", ephemeral=True)
+            f"🏖️ Отмечено: брейквар до <t:{until}:D>. Вернётесь раньше — `/вернулся`.", ephemeral=True)
 
-    @app_commands.command(name="вернулся", description="Закончить отпуск")
+    @app_commands.command(name="вернулся", description="Вернуться из брейквара")
     @app_commands.guild_only()
     async def back(self, interaction: discord.Interaction) -> None:
         if db.end_vacation(interaction.user.id):
             await interaction.response.send_message("⚔️ С возвращением в строй!", ephemeral=True)
         else:
-            await interaction.response.send_message("Вы не в отпуске.", ephemeral=True)
+            await interaction.response.send_message("Вы не в брейкваре.", ephemeral=True)
 
-    @app_commands.command(name="отпуска", description="Кто сейчас в отпуске")
+    @app_commands.command(name="брейквары", description="Кто сейчас в брейкваре")
     @app_commands.guild_only()
     async def vacations(self, interaction: discord.Interaction) -> None:
         if not is_officer(interaction.user):
@@ -820,12 +828,12 @@ class Profiles(commands.Cog):
             return
         items = db.vacations()
         if not items:
-            await interaction.response.send_message("Сейчас никто не в отпуске.", ephemeral=True)
+            await interaction.response.send_message("Сейчас никто не в брейкваре.", ephemeral=True)
             return
         lines = [f"<@{v['user_id']}> — до <t:{v['until']}:D>" + (f" · {v['reason']}" if v["reason"] else "")
                  for v in items[:40]]
         await interaction.response.send_message(
-            embed=discord.Embed(title=f"🏖️ В отпуске: {len(items)}", description="\n".join(lines)[:4000],
+            embed=discord.Embed(title=f"🏖️ В брейкваре: {len(items)}", description="\n".join(lines)[:4000],
                                 color=discord.Color.dark_red()), ephemeral=True)
 
 

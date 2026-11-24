@@ -389,7 +389,7 @@ def dossier_embed(member: discord.abc.User) -> discord.Embed:
             e.add_field(name="Ник в Foxhole", value=p.get("nickname") or app.get("nickname") or "—", inline=True)
             vac = profiles.db.vacation(member.id)
             if vac:
-                e.add_field(name="Статус", value=f"🏖️ в отпуске до <t:{vac['until']}:D>", inline=True)
+                e.add_field(name="Статус", value=f"🏖️ брейквар до <t:{vac['until']}:D>", inline=True)
     except Exception:
         log.exception("Личное дело: профиль")
     if isinstance(member, discord.Member) and member.joined_at:

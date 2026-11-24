@@ -1,6 +1,6 @@
 """Отчёты для Сената.
 
-- Кадровый отчёт: состав по званиям, кто в отпуске, кто неактивен 14+ дней.
+- Кадровый отчёт: состав по званиям, кто в брейкваре, кто неактивен 14+ дней.
 - Недельный доклад: каждый понедельник в 10:00 (часовой пояс TZ_OFFSET) в «Сенат»;
   также по кнопке на панели Сената.
 
@@ -88,7 +88,7 @@ def top_rank_id(member: discord.Member) -> Optional[int]:
 # ---------- кадровый отчёт ----------
 
 def inactive_members(guild: discord.Guild) -> list[tuple[int, discord.Member]]:
-    """(последняя активность или 0, участник) — неактивные дольше INACTIVE_DAYS, без отпускников."""
+    """(последняя активность или 0, участник) — неактивные дольше INACTIVE_DAYS, без тех, кто в брейкваре."""
     from cogs import profiles
     activity = last_activity()
     on_vacation = {v["user_id"] for v in profiles.db.vacations()} if profiles.db else set()
@@ -120,7 +120,7 @@ def personnel_embeds(guild: discord.Guild) -> list[discord.Embed]:
     main.description = (f"Всего в Легионе: **{len(members)}**\n\n" + "\n".join(rank_lines))[:4000]
     if on_vacation:
         vac = [f"<@{uid}> — до <t:{v['until']}:D>" for uid, v in on_vacation.items()]
-        main.add_field(name=f"🏖️ В отпуске ({len(vac)})", value="\n".join(vac)[:1024], inline=False)
+        main.add_field(name=f"🏖️ В брейкваре ({len(vac)})", value="\n".join(vac)[:1024], inline=False)
 
     inactive = inactive_members(guild)
 
@@ -136,7 +136,7 @@ def personnel_embeds(guild: discord.Guild) -> list[discord.Embed]:
         second.description += f"\n…и ещё {len(inactive) - 60}"
     days_tracked = (now - since) / 86400
     note = ("Активность: чат, голос, операции, голосования, выборы, эдикты, благодарности, склады. "
-            "Отпускники не учитываются.")
+            "Кто в брейкваре — не учитывается.")
     if days_tracked < INACTIVE_DAYS:
         note += (f"\n⚠️ Учёт чата и голоса ведётся с <t:{since}:D> — список станет точным "
                  f"<t:{since + INACTIVE_DAYS * 86400}:R>.")
@@ -246,7 +246,7 @@ def weekly_embed(guild: discord.Guild, days: int = 7) -> discord.Embed:
             e.add_field(name="🎧 Больше всех в голосе",
                         value="\n".join(f"<@{u}> — {s / 3600:.1f} ч" for u, s in voice)[:1024], inline=True)
         vac = profiles.db.vacations()
-        e.add_field(name="🏖️ В отпуске", value=str(len(vac)), inline=True)
+        e.add_field(name="🏖️ В брейкваре", value=str(len(vac)), inline=True)
 
     # Сенат
     if senate.db is not None:
