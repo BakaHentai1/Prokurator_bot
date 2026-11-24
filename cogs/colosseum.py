@@ -625,7 +625,9 @@ class TournamentSetupView(discord.ui.View):
         tid = db.x("INSERT INTO tournaments (name, channel_id, starts_at, author_id) VALUES (?, ?, ?, ?)",
                    (self.name, channel.id, starts, interaction.user.id))
         t = db.q("SELECT * FROM tournaments WHERE id = ?", (tid,))[0]
-        msg = await channel.send(embed=t_embed(t), view=t_view(t))
+        ping = f"<@&{config.MEMBER_ROLE_ID}>" if config.MEMBER_ROLE_ID else None
+        msg = await channel.send(content=ping, embed=t_embed(t), view=t_view(t),
+                                 allowed_mentions=discord.AllowedMentions(roles=True))
         db.x("UPDATE tournaments SET message_id = ? WHERE id = ?", (msg.id, tid))
         await interaction.response.edit_message(content=f"🦁 Турнир объявлен: {msg.jump_url}", view=None)
 
