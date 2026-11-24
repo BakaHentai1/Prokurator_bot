@@ -741,6 +741,81 @@ class PrefecturePanel(discord.ui.View):
                                                 ephemeral=True)
 
 
+    @discord.ui.button(label="Очистка", emoji="⚠️", custom_id="pref:reset", row=4)
+    async def reset(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        from cogs.warehouses import can_reset
+        if not can_reset(interaction.user):
+            await no_rights(interaction, "⛔ Очистка Префектуры доступна только Принцепсу.")
+            return
+        await interaction.response.send_modal(PrefResetModal())
+
+
+class PrefResetModal(discord.ui.Modal, title="⚠️ Очистка Префектуры"):
+    confirm = discord.ui.TextInput(label="Для подтверждения напишите: ОЧИСТКА", max_length=10)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        from cogs.warehouses import can_reset
+        if not can_reset(interaction.user):
+            await no_rights(interaction, "⛔ Очистка Префектуры доступна только Принцепсу.")
+            return
+        if self.confirm.value.strip().upper() != "ОЧИСТКА":
+            await interaction.response.send_message("Очистка отменена: подтверждение не совпало.", ephemeral=True)
+            return
+        await interaction.response.send_message("⏳ Очищаю Префектуру… Это может занять пару минут.", ephemeral=True)
+        text = await reset_prefecture(interaction.client, interaction.user)
+        await interaction.edit_original_response(content=text)
+
+
+async def reset_prefecture(client: discord.Client, user: discord.abc.User) -> str:
+    """Закрывает всё открытое в Префектуре и чистит канал (кроме закреплённых сообщений)."""
+    note = ""
+    try:
+        from cogs.backup import send_backup
+        if config.AUDIT_CHANNEL_ID:
+            await send_backup(client, f"перед очисткой Префектуры ({user})")
+            note = "резервная копия — в «Инвентариуме»"
+    except Exception as e:
+        log.error("Копия перед очисткой Префектуры: %s", e)
+        note = "⚠️ резервную копию сделать не удалось"
+    now = int(time.time())
+    c = db.conn
+    counts = {
+        "заказов": c.execute(f"UPDATE orders SET status = 'cancelled', updated_at = ? WHERE status IN "
+                             f"({','.join('?' * len(OPEN))})", (now, *OPEN)).rowcount,
+        "MPF": c.execute("UPDATE mpf_jobs SET status = 'cancelled', closed_at = ? WHERE status = 'queued'",
+                         (now,)).rowcount,
+    }
+    for label, sql in (("объектов", "UPDATE facilities SET status = 'removed' WHERE status = 'active'"),
+                       ("сборов", "UPDATE gatherings SET status = 'cancelled' WHERE status = 'open'"),
+                       ("ресурсов", "UPDATE resources SET amount = 0, updated_by = NULL, updated_at = NULL "
+                                    "WHERE amount != 0")):
+        try:
+            counts[label] = c.execute(sql).rowcount
+        except sqlite3.Error:
+            counts[label] = 0
+    c.commit()
+
+    deleted = 0
+    cid = prefecture_channel_id()
+    channel = client.get_channel(cid) if cid else None
+    if channel is not None:
+        try:
+            deleted = len(await channel.purge(limit=3000, check=lambda m: not m.pinned))
+        except discord.HTTPException as e:
+            note += f"\n⚠️ канал очистить не вышло: {e.text or e} (нужно право «Управлять сообщениями»)"
+
+    summary = ", ".join(f"{k} — {v}" for k, v in counts.items())
+    try:
+        from cogs.consulate import archive
+        await archive(client, f"⚠️ <t:{now}:f> · {user.mention} выполнил **очистку Префектуры**: закрыто {summary}; "
+                              f"удалено сообщений — {deleted}.")
+    except Exception:
+        pass
+    log.info("Очистка Префектуры (%s): %s, сообщений %d", user, summary, deleted)
+    return (f"✅ Префектура очищена. Закрыто: {summary}. Удалено сообщений в канале: **{deleted}**. "
+            f"Закреплённая панель осталась." + (f"\n{note}" if note else ""))
+
+
 def panel_embed() -> discord.Embed:
     return discord.Embed(
         title="🏭 ПРЕФЕКТУРА",
@@ -753,6 +828,26 @@ def panel_embed() -> discord.Embed:
 class Prefecture(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        """Обновляет меню закреплённой панели (чтобы появлялись новые пункты)."""
+        if getattr(self, "_panel_refreshed", False):
+            return
+        self._panel_refreshed = True
+        cid = prefecture_channel_id()
+        channel = self.bot.get_channel(cid) if cid else None
+        if channel is None:
+            return
+        try:
+            from cogs.compact import prefecture_panel
+            for m in await channel.pins():
+                if m.author.id == self.bot.user.id and any(
+                        getattr(ch, "custom_id", None) == "pref:menu"
+                        for row in m.components for ch in getattr(row, "children", [])):
+                    await m.edit(embed=panel_embed(), view=prefecture_panel()())
+        except discord.HTTPException as e:
+            log.warning("Не удалось обновить панель Префектуры: %s", e)
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
