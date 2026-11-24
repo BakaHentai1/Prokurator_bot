@@ -159,6 +159,10 @@ class DB:
             c.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
             c.commit()
             log.info("База складов обновлена до версии %d", SCHEMA_VERSION)
+        # Сообщения-напоминания об обновлении (чтобы удалять их после обновления склада)
+        c.execute("CREATE TABLE IF NOT EXISTS reminder_msgs (warehouse_id INTEGER NOT NULL, "
+                  "channel_id INTEGER NOT NULL, message_id INTEGER PRIMARY KEY)")
+        c.commit()
         if not c.execute("SELECT 1 FROM permissions LIMIT 1").fetchone():
             self.reset_permissions()
 
@@ -192,6 +196,18 @@ class DB:
         cols = ", ".join(f"{k} = ?" for k in fields)
         self.conn.execute(f"UPDATE warehouses SET {cols} WHERE id = ?", (*fields.values(), wid))
         self.conn.commit()
+
+    # напоминания
+    def add_reminder_msg(self, wid: int, channel_id: int, message_id: int) -> None:
+        self.conn.execute("INSERT OR REPLACE INTO reminder_msgs VALUES (?, ?, ?)", (wid, channel_id, message_id))
+        self.conn.commit()
+
+    def pop_reminder_msgs(self, wid: int) -> list[tuple[int, int]]:
+        rows = [(r["channel_id"], r["message_id"]) for r in self.conn.execute(
+            "SELECT channel_id, message_id FROM reminder_msgs WHERE warehouse_id = ?", (wid,))]
+        self.conn.execute("DELETE FROM reminder_msgs WHERE warehouse_id = ?", (wid,))
+        self.conn.commit()
+        return rows
 
     # журнал
     def log(self, user_id: int, wid: Optional[int], action: str, details: str = "") -> int:
@@ -765,6 +781,7 @@ class StatusView(discord.ui.View):
         await interaction.response.edit_message(content=f"✅ Статус: {STATUSES[new][0]}", view=None)
         if new == "closed":
             action = "archive"
+            await clear_reminders(interaction.client, wh["id"])
         elif wh["status"] == "closed":
             action = "reopen"
         else:
@@ -875,6 +892,7 @@ async def on_card_button(interaction: discord.Interaction, action: str, wid: int
             ephemeral=True,
         )
         await audit(interaction.client, member, wh, "refresh")
+        await clear_reminders(interaction.client, wh["id"])
         error = await publish_card(interaction.client, wh["id"])
         if error:
             await interaction.followup.send(error, ephemeral=True)
@@ -887,6 +905,15 @@ async def on_card_button(interaction: discord.Interaction, action: str, wid: int
 
 
 # ---------- напоминания об обновлении ----------
+
+async def clear_reminders(client: discord.Client, wid: int) -> None:
+    """Удаляет все напоминания об обновлении этого склада (в Секретариуме и в личке)."""
+    for channel_id, message_id in db.pop_reminder_msgs(wid):
+        try:
+            await client.get_partial_messageable(channel_id).get_partial_message(message_id).delete()
+        except discord.HTTPException:
+            pass
+
 
 async def send_reminder(client: discord.Client, wh: dict, stage: int) -> None:
     expires = expires_at(wh)
@@ -907,11 +934,13 @@ async def send_reminder(client: discord.Client, wh: dict, stage: int) -> None:
         text += f"\nКарточка: {jump_url(wh)}"
     view = discord.ui.View(timeout=None)
     view.add_item(CardButton("refresh", wh["id"], "Обновил", "♻️", discord.ButtonStyle.success))
+    await clear_reminders(client, wh["id"])  # остаётся только самое свежее напоминание
 
     if wh["category"] == "personal":
         try:
             owner = client.get_user(wh["owner_id"]) or await client.fetch_user(wh["owner_id"])
-            await owner.send(text, view=view)
+            msg = await owner.send(text, view=view)
+            db.add_reminder_msg(wh["id"], msg.channel.id, msg.id)
             log.info("Напоминание %d о складе %s отправлено владельцу в личку", stage, wh["id"])
             return
         except discord.HTTPException:
@@ -920,11 +949,12 @@ async def send_reminder(client: discord.Client, wh: dict, stage: int) -> None:
     channel = client.get_channel(config.SECRETARIUM_CHANNEL_ID) or await client.fetch_channel(
         config.SECRETARIUM_CHANNEL_ID
     )
-    await channel.send(
+    msg = await channel.send(
         f"<@{wh['owner_id']}> {text}",
         view=view,
         allowed_mentions=discord.AllowedMentions(users=True),
     )
+    db.add_reminder_msg(wh["id"], msg.channel.id, msg.id)
     log.info("Напоминание %d о складе %s отправлено в Секретариум", stage, wh["id"])
 
 
@@ -1067,6 +1097,7 @@ class WarResetChoice(discord.ui.View):
                 continue
             db.update(wh["id"], status="closed")
             db.log(user.id, wh["id"], "war_reset", label)
+            await clear_reminders(client, wh["id"])
             closed += 1
             if delete_cards and wh["message_id"] and wh["channel_id"]:
                 channel = client.get_channel(wh["channel_id"])
