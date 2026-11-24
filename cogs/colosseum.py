@@ -671,6 +671,9 @@ def pick_question() -> tuple[str, str, str, list[str]]:
     pool += [(f"c{r['id']}", r["question"], r["correct"], r["wrong"].split("|"))
              for r in db.q("SELECT * FROM quiz_custom")]
     fresh = [p for p in pool if p[0] not in used]
+    custom = [p for p in fresh if p[0].startswith("c")]
+    if custom:  # свои вопросы командования — в первую очередь, по порядку добавления
+        return min(custom, key=lambda p: int(p[0][1:]))
     if not fresh:  # все вопросы были — начинаем круг заново, но не повторяем последние 10
         recent = {r["qkey"] for r in db.q("SELECT qkey FROM quiz_posts ORDER BY id DESC LIMIT 10")}
         fresh = [p for p in pool if p[0] not in recent] or pool
