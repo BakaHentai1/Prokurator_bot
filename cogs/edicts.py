@@ -251,12 +251,8 @@ class EdictForm(discord.ui.Modal, title="Новый эдикт"):
         self.image = discord.ui.TextInput(label="Ссылка на картинку (необязательно)", max_length=400,
                                           required=False, placeholder="https://…",
                                           default=edit["image"] if edit else None)
-        self.when = discord.ui.TextInput(label=f"Опубликовать ({tz_name()}) — пусто: сразу", max_length=30,
-                                         required=False, placeholder="21:00 · 23.11 21:00 · через 2ч")
         for item in (self.e_title, self.body, self.image):
             self.add_item(item)
-        if not edit:
-            self.add_item(self.when)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         image = self.image.value.strip()
@@ -267,15 +263,6 @@ class EdictForm(discord.ui.Modal, title="Новый эдикт"):
             return
 
         publish_at = int(time.time())
-        if self.when.value.strip():
-            publish_at = parse_start(self.when.value)
-            if publish_at is None:
-                await interaction.response.send_message(
-                    f"Не понял время публикации: «{self.when.value}». Примеры ({tz_name()}): `21:00`, "
-                    "`23.11 21:00`, `через 2ч`.",
-                    ephemeral=True,
-                )
-                return
         draft = {
             "channel_id": interaction.channel.id,
             "title": self.e_title.value.strip(),
@@ -317,12 +304,18 @@ class EdictForm(discord.ui.Modal, title="Новый эдикт"):
 class EdictSetupView(discord.ui.View):
     def __init__(self, draft: dict) -> None:
         super().__init__(timeout=900)
+        from cogs.timepick import add_when
         self.draft = draft
         self.done = False
+        add_when(self, "publish", 2, 3)
+
+    async def on_when(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(content=self.summary(), embed=self.preview(), view=self)
 
     def summary(self) -> str:
+        from cogs.timepick import when_text
         d = self.draft
-        when = "сразу" if d["publish_at"] <= time.time() + 60 else f"<t:{d['publish_at']}:f> (<t:{d['publish_at']}:R>)"
+        when = when_text(self)
         return (
             "**Предпросмотр эдикта** (номер присвоится при сохранении)\n"
             f"Публикация: {when} · {PINGS[d['ping']]} · "
@@ -348,10 +341,16 @@ class EdictSetupView(discord.ui.View):
         self.draft["ack"] = select.values[0] == "1"
         await interaction.response.edit_message(content=self.summary(), embed=self.preview(), view=self)
 
-    @discord.ui.button(label="Издать", emoji="📜", style=discord.ButtonStyle.success, row=2)
+    @discord.ui.button(label="Издать", emoji="📜", style=discord.ButtonStyle.success, row=4)
     async def issue(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        from cogs.timepick import when_ok, when_ts
         if self.done:
             return
+        err = when_ok(self)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+        self.draft["publish_at"] = when_ts(self) or int(time.time())
         if not can_create(interaction.user):
             await interaction.response.send_message("⛔ Недостаточно прав.", ephemeral=True)
             return

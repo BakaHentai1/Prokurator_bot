@@ -451,77 +451,97 @@ async def finish(client: discord.Client, o: dict) -> None:
 # ---------- создание ----------
 
 class OperationForm(discord.ui.Modal, title="Новая операция"):
+    """Шаг 1: текст. Шаг 2 (OpSetupView): день и время из меню."""
+
     def __init__(self) -> None:
         super().__init__()
         self.op_title = discord.ui.TextInput(label="Название", max_length=100,
                                              placeholder="Например: Штурм Abandoned Ward")
-        self.start = discord.ui.TextInput(label=f"Начало ({tz_name()})", max_length=30,
-                                          placeholder="21:00 · 23.11 21:00 · через 2ч")
         self.place = discord.ui.TextInput(label="Место (гекс / регион)", max_length=100, required=False,
                                           placeholder="Например: Deadlands / Abandoned Ward")
         self.task = discord.ui.TextInput(label="Задача и сбор", style=discord.TextStyle.paragraph, max_length=1500,
                                          required=False, placeholder="Что делаем, где сбор, что взять с собой")
         self.image = discord.ui.TextInput(label="Ссылка на картинку (необязательно)", max_length=400,
                                           required=False, placeholder="https://…")
-        for item in (self.op_title, self.start, self.place, self.task, self.image):
+        for item in (self.op_title, self.place, self.task, self.image):
             self.add_item(item)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not can_create_op(interaction.user):
-            await interaction.response.send_message("⛔ Операции объявляют Принцепс, Консулы, Сенат и Легаты.", ephemeral=True)
-            return
-        starts_at = parse_start(self.start.value)
-        if starts_at is None:
-            await interaction.response.send_message(
-                f"Не понял время начала: «{self.start.value}». Примеры ({tz_name()}): `21:00`, `23.11 21:00`, "
-                "`через 2ч`. Время должно быть в будущем, не дальше 60 дней.",
-                ephemeral=True,
-            )
+            await interaction.response.send_message("⛔ Операции объявляют Принцепс, Консулы, Сенат и Легаты.",
+                                                    ephemeral=True)
             return
         image = self.image.value.strip()
         if image and not image.startswith(("http://", "https://")):
             image = ""
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        draft = {"title": self.op_title.value.strip(), "task": self.task.value.strip(),
+                 "place": self.place.value.strip(), "image": image}
+        view = OpSetupView(draft)
+        await interaction.response.send_message(view.summary(), view=view, ephemeral=True)
 
-        oid = db.create({
-            "title": self.op_title.value.strip(), "task": self.task.value.strip(), "place": self.place.value.strip(),
-            "image": image, "starts_at": starts_at, "creator_id": interaction.user.id,
-        })
-        o = db.get(oid)
-        ping = f"<@&{config.MEMBER_ROLE_ID}>" if config.MEMBER_ROLE_ID else None
+
+class OpSetupView(discord.ui.View):
+    def __init__(self, draft: dict) -> None:
+        super().__init__(timeout=900)
+        from cogs.timepick import add_when
+        self.draft = draft
+        self.done = False
+        add_when(self, "start", 0, 1)
+
+    def summary(self) -> str:
+        from cogs.timepick import when_text
+        return (f"⚔️ **{self.draft['title']}**\nНачало: {when_text(self)}\n\n"
+                "Выберите день и время и нажмите «Объявить».")
+
+    async def on_when(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(content=self.summary(), view=self)
+
+    @discord.ui.button(label="Объявить", emoji="⚔️", style=discord.ButtonStyle.success, row=2)
+    async def publish(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        from cogs.timepick import when_ok, when_ts
+        if self.done:
+            return
+        err = when_ok(self)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+        if not can_create_op(interaction.user):
+            await interaction.response.send_message("⛔ Недостаточно прав.", ephemeral=True)
+            return
+        self.done = True
+        self.stop()
+        await interaction.response.edit_message(content="⏳ Публикую…", view=None)
+        result = await publish_op(interaction, dict(self.draft, starts_at=when_ts(self)))
+        await interaction.edit_original_response(content=result)
+
+
+async def publish_op(interaction: discord.Interaction, d: dict) -> str:
+    oid = db.create({**d, "creator_id": interaction.user.id})
+    o = db.get(oid)
+    ping = f"<@&{config.MEMBER_ROLE_ID}>" if config.MEMBER_ROLE_ID else None
+    message = None
+    for attempt in range(2):
         try:
-            message = await interaction.channel.send(
-                content=ping, embed=op_embed(o), view=op_view(o),
-                allowed_mentions=discord.AllowedMentions(roles=True),
-            )
+            message = await interaction.channel.send(content=ping, embed=op_embed(o), view=op_view(o),
+                                                     allowed_mentions=discord.AllowedMentions(roles=True))
+            break
         except discord.HTTPException as e:
-            if image:  # чаще всего ломается плохая ссылка на картинку — пробуем без неё
+            if attempt == 0 and o["image"]:  # чаще всего ломается плохая ссылка на картинку
                 db.set(oid, image="")
                 o = db.get(oid)
-                try:
-                    message = await interaction.channel.send(
-                        content=ping, embed=op_embed(o), view=op_view(o),
-                        allowed_mentions=discord.AllowedMentions(roles=True),
-                    )
-                except discord.HTTPException as e2:
-                    db.set(oid, status="cancelled")
-                    await interaction.followup.send(f"Не удалось опубликовать: {e2.text or e2}", ephemeral=True)
-                    return
-            else:
-                db.set(oid, status="cancelled")
-                await interaction.followup.send(f"Не удалось опубликовать: {e.text or e}", ephemeral=True)
-                return
-
-        db.set(oid, channel_id=message.channel.id, message_id=message.id)
-        o = db.get(oid)
-        await interaction.followup.send(f"✅ Операция №{oid} объявлена: {message.jump_url}", ephemeral=True)
-        await archive(
-            interaction.client,
-            f"⚔️ <t:{int(time.time())}:f> · {interaction.user.mention} объявил операцию №{oid} "
-            f"«{o['title']}» на <t:{o['starts_at']}:f>" + (f" · {o['place']}" if o["place"] else "")
-            + f" · {message.jump_url}",
-        )
-        log.info("Операция %s объявлена (%s)", oid, interaction.user)
+                continue
+            db.set(oid, status="cancelled")
+            return f"Не удалось опубликовать: {e.text or e}"
+    db.set(oid, channel_id=message.channel.id, message_id=message.id)
+    o = db.get(oid)
+    await archive(
+        interaction.client,
+        f"⚔️ <t:{int(time.time())}:f> · {interaction.user.mention} объявил операцию №{oid} "
+        f"«{o['title']}» на <t:{o['starts_at']}:f>" + (f" · {o['place']}" if o["place"] else "")
+        + f" · {message.jump_url}",
+    )
+    log.info("Операция %s объявлена (%s)", oid, interaction.user)
+    return f"✅ Операция №{oid} объявлена: {message.jump_url}"
 
 
 class Operations(commands.Cog):

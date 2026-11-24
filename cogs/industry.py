@@ -471,34 +471,61 @@ def gat_view(g: dict) -> Optional[discord.ui.View]:
 class GatheringForm(discord.ui.Modal, title="Сбор на добычу"):
     what = discord.ui.TextInput(label="Что добываем", max_length=80, placeholder="Скрап, компоненты, сера, нефть…")
     place = discord.ui.TextInput(label="Где", max_length=100, required=False, placeholder="Гекс / регион / поле")
-    when = discord.ui.TextInput(label="Когда", max_length=30, placeholder="20:00 · 23.11 19:30 · через 30м")
     comment = discord.ui.TextInput(label="Комментарий (необязательно)", style=discord.TextStyle.paragraph,
                                    max_length=500, required=False, placeholder="Место сбора, что взять, транспорт")
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        from cogs.operations import parse_start, tz_name
         if not is_officer(interaction.user):
             await refuse(interaction, "офицеры")
             return
-        starts = parse_start(self.when.value)
-        if starts is None:
-            await interaction.response.send_message(
-                f"Не понял время ({tz_name()}). Примеры: `20:00`, `23.11 19:30`, `через 30м`.", ephemeral=True)
+        draft = {"what": self.what.value.strip(), "place": self.place.value.strip(),
+                 "comment": self.comment.value.strip()}
+        view = GatSetupView(draft)
+        await interaction.response.send_message(view.summary(), view=view, ephemeral=True)
+
+
+class GatSetupView(discord.ui.View):
+    def __init__(self, draft: dict) -> None:
+        super().__init__(timeout=900)
+        from cogs.timepick import add_when
+        self.draft = draft
+        self.done = False
+        add_when(self, "start", 0, 1)
+
+    def summary(self) -> str:
+        from cogs.timepick import when_text
+        return (f"⛏️ **{self.draft['what']}**\nНачало: {when_text(self)}\n\n"
+                "Выберите день и время и нажмите «Объявить».")
+
+    async def on_when(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(content=self.summary(), view=self)
+
+    @discord.ui.button(label="Объявить", emoji="⛏️", style=discord.ButtonStyle.success, row=2)
+    async def publish(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        from cogs.timepick import when_ok, when_ts
+        if self.done:
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        gid = db.gat_create({"channel_id": interaction.channel.id, "what": self.what.value.strip(),
-                             "place": self.place.value.strip(), "starts_at": starts,
-                             "comment": self.comment.value.strip(), "author_id": interaction.user.id})
+        err = when_ok(self)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+        self.done = True
+        self.stop()
+        await interaction.response.edit_message(content="⏳ Публикую…", view=None)
+        gid = db.gat_create({"channel_id": interaction.channel.id, "what": self.draft["what"],
+                             "place": self.draft["place"], "starts_at": when_ts(self),
+                             "comment": self.draft["comment"], "author_id": interaction.user.id})
         g = db.gat(gid)
         try:
             message = await interaction.channel.send(embed=gat_embed(g), view=gat_view(g),
                                                      allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException as e:
             db.gat_set(gid, status="cancelled")
-            await interaction.followup.send(f"Не удалось опубликовать: {e.text or e}", ephemeral=True)
+            await interaction.edit_original_response(content=f"Не удалось опубликовать: {e.text or e}")
             return
         db.gat_set(gid, message_id=message.id)
-        await interaction.followup.send(f"✅ Сбор №{gid} объявлен. За 15 минут напомню тем, кто идёт.", ephemeral=True)
+        await interaction.edit_original_response(
+            content=f"✅ Сбор №{gid} объявлен. За 15 минут напомню тем, кто идёт.")
 
 
 async def gat_tick(client: discord.Client) -> None:

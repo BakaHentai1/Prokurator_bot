@@ -359,19 +359,11 @@ class OrderForm(discord.ui.Modal, title="Новый производственн
                                  placeholder="Например:\n100 ящиков 7.62\n20 ящиков бинтов")
     destination = discord.ui.TextInput(label="Куда доставить", max_length=150,
                                        placeholder="Номер склада (№3) или место: Deadlands / Abandoned Ward")
-    deadline = discord.ui.TextInput(label="Срок (необязательно)", max_length=30, required=False,
-                                    placeholder="30.11 · 23.11 21:00 · через 6ч")
     comment = discord.ui.TextInput(label="Комментарий (необязательно)", style=discord.TextStyle.paragraph,
                                    max_length=500, required=False)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         deadline = None
-        if self.deadline.value.strip():
-            deadline = parse_deadline(self.deadline.value)
-            if deadline is None:
-                await interaction.response.send_message("Не понял срок. Примеры: `30.11`, `23.11 21:00`, `через 6ч`.",
-                                                        ephemeral=True)
-                return
         draft = {
             "channel_id": interaction.channel.id,
             "items": self.items.value.strip(),
@@ -389,28 +381,41 @@ class OrderForm(discord.ui.Modal, title="Новый производственн
 class OrderSetupView(discord.ui.View):
     def __init__(self, draft: dict) -> None:
         super().__init__(timeout=900)
+        from cogs.timepick import add_when
         self.draft = draft
         self.done = False
+        add_when(self, "deadline", 1, 2)
 
     def summary(self) -> str:
+        from cogs.timepick import when_text
         d = self.draft
         where = d["destination"] + (" (склад найден ✅)" if d["warehouse_id"] else "")
-        return (f"🏭 **Заказ:** {d['items'][:300]}\n**Куда:** {where}\n**Приоритет:** {PRIORITIES[d['priority']]}\n\n"
-                "Выберите приоритет и нажмите «Опубликовать». Срочные заказы упоминают Фабрумов.")[:2000]
+        return (f"🏭 **Заказ:** {d['items'][:300]}\n**Куда:** {where}\n**Приоритет:** {PRIORITIES[d['priority']]}\n"
+                f"**Срок:** {when_text(self)}\n\n"
+                "Выберите приоритет и срок и нажмите «Опубликовать». Срочные заказы упоминают Фабрумов.")[:2000]
+
+    async def on_when(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(content=self.summary(), view=self)
 
     @discord.ui.select(placeholder="Приоритет: обычный", options=[
         discord.SelectOption(label="Срочно", value="urgent", emoji="🔴"),
         discord.SelectOption(label="Обычный", value="normal", emoji="🟡"),
         discord.SelectOption(label="Не горит", value="low", emoji="🟢"),
-    ])
+    ], row=0)
     async def priority(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
         self.draft["priority"] = select.values[0]
         await interaction.response.edit_message(content=self.summary(), view=self)
 
-    @discord.ui.button(label="Опубликовать", emoji="🏭", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Опубликовать", emoji="🏭", style=discord.ButtonStyle.success, row=3)
     async def publish(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        from cogs.timepick import when_ok, when_ts
         if self.done:
             return
+        err = when_ok(self)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+        self.draft["deadline"] = when_ts(self)
         if not is_officer(interaction.user):
             await no_rights(interaction, "⛔ Заказы создают офицеры.")
             return

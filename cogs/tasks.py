@@ -249,8 +249,6 @@ class TaskForm(discord.ui.Modal, title="Новое поручение"):
                                       placeholder="Например: наладить снабжение Deadlands")
     details = discord.ui.TextInput(label="Подробности (необязательно)", style=discord.TextStyle.paragraph,
                                    max_length=1500, required=False)
-    deadline = discord.ui.TextInput(label="Срок (необязательно)", max_length=30, required=False,
-                                    placeholder="30.11 · 23.11 21:00 · через 2д")
 
     def __init__(self, assignees: list[int], setup_view: "TaskSetupView") -> None:
         super().__init__()
@@ -261,13 +259,12 @@ class TaskForm(discord.ui.Modal, title="Новое поручение"):
         if not can_assign(interaction.user):
             await interaction.response.send_message("⛔ Поручения выдают Принцепс, Консулы и Сенаторы.", ephemeral=True)
             return
-        deadline = None
-        if self.deadline.value.strip():
-            deadline = parse_deadline(self.deadline.value)
-            if deadline is None:
-                await interaction.response.send_message(
-                    "Не понял срок. Примеры: `30.11`, `23.11 21:00`, `через 2д`.", ephemeral=True)
-                return
+        from cogs.timepick import when_ok, when_ts
+        err = when_ok(self.setup_view)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+        deadline = when_ts(self.setup_view)
         if self.setup_view.done:
             return
         self.setup_view.done = True
@@ -295,17 +292,26 @@ class TaskForm(discord.ui.Modal, title="Новое поручение"):
 class TaskSetupView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=900)
+        from cogs.timepick import add_when
         self.assignees: list[int] = []
         self.done = False
+        add_when(self, "deadline", 1, 2)
 
-    @discord.ui.select(cls=discord.ui.UserSelect, placeholder="Кому поручить (можно несколько)", max_values=10)
+    def summary(self) -> str:
+        from cogs.timepick import when_text
+        names = " ".join(f"<@{u}>" for u in self.assignees) or "не выбраны"
+        return (f"📌 **Новое поручение**\nИсполнители: {names}\nСрок: {when_text(self)}\n"
+                "Дальше — «Текст».")
+
+    async def on_when(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(content=self.summary(), view=self)
+
+    @discord.ui.select(cls=discord.ui.UserSelect, placeholder="Кому поручить (можно несколько)", max_values=10, row=0)
     async def people(self, interaction: discord.Interaction, select: discord.ui.UserSelect) -> None:
         self.assignees = [u.id for u in select.values if not u.bot]
-        names = " ".join(f"<@{u}>" for u in self.assignees) or "никто"
-        await interaction.response.edit_message(content=f"📌 Исполнители: {names}\nДальше — «Текст и срок».",
-                                                view=self)
+        await interaction.response.edit_message(content=self.summary(), view=self)
 
-    @discord.ui.button(label="Текст и срок", emoji="📝", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Текст", emoji="📝", style=discord.ButtonStyle.success, row=3)
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not self.assignees:
             await interaction.response.send_message("Сначала выберите исполнителей.", ephemeral=True)
@@ -317,8 +323,8 @@ async def start_task(interaction: discord.Interaction) -> None:
     if not can_assign(interaction.user):
         await interaction.response.send_message("⛔ Поручения выдают Принцепс, Консулы и Сенаторы.", ephemeral=True)
         return
-    await interaction.response.send_message("📌 **Новое поручение.** Выберите исполнителей:", view=TaskSetupView(),
-                                            ephemeral=True)
+    view = TaskSetupView()
+    await interaction.response.send_message(view.summary(), view=view, ephemeral=True)
 
 
 def list_embed(items: list[dict], title: str) -> discord.Embed:

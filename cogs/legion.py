@@ -512,12 +512,11 @@ class JobForm(discord.ui.Modal, title="Открытое задание для л
     details = discord.ui.TextInput(label="Подробности (необязательно)", style=discord.TextStyle.paragraph,
                                    max_length=800, required=False)
     slots = discord.ui.TextInput(label="Сколько человек нужно", max_length=2, default="1")
-    deadline = discord.ui.TextInput(label="Актуально до (необязательно)", max_length=30, required=False,
-                                    placeholder="30.11 · 23.11 21:00 · через 6ч")
 
-    def __init__(self, spec: str) -> None:
+    def __init__(self, setup_view: "JobSpecView") -> None:
         super().__init__()
-        self.spec = spec
+        self.setup_view = setup_view
+        self.spec = setup_view.spec_value
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not is_officer(interaction.user):
@@ -527,31 +526,53 @@ class JobForm(discord.ui.Modal, title="Открытое задание для л
             slots = max(1, min(int(self.slots.value), 50))
         except ValueError:
             slots = 1
-        deadline = None
-        if self.deadline.value.strip():
-            from cogs.operations import parse_start
-            from cogs.profiles import parse_until
-            deadline = parse_start(self.deadline.value) or parse_until(self.deadline.value)
-            if deadline is None:
-                await say(interaction, "Не понял срок. Примеры: `30.11`, `23.11 21:00`, `через 6ч`.")
-                return
+        from cogs.timepick import when_ok, when_ts
+        err = when_ok(self.setup_view)
+        if err:
+            await say(interaction, err)
+            return
+        if self.setup_view.done:
+            return
+        self.setup_view.done = True
+        self.setup_view.stop()
+        deadline = when_ts(self.setup_view)
         jid = db.x("INSERT INTO jobs (title, details, spec, slots, deadline, author_id, created_at) "
                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
                    (self.jtitle.value.strip(), self.details.value.strip(), self.spec, slots, deadline,
                     interaction.user.id, int(time.time())))
-        await say(interaction, f"✅ Задание №{jid} выложено. Легионеры получат его через «🎯 Получить задание».")
+        await interaction.response.edit_message(
+            content=f"✅ Задание №{jid} выложено. Легионеры получат его через «🎯 Получить задание».", view=None)
 
 
 class JobSpecView(discord.ui.View):
     def __init__(self) -> None:
-        super().__init__(timeout=300)
-        self.spec.options = [discord.SelectOption(label="Любой легионер", value="any", emoji="🦅")] + [
+        from cogs.timepick import add_when
+        super().__init__(timeout=900)
+        self.spec_value = ""
+        self.done = False
+        self.spec.options = [discord.SelectOption(label="Любой легионер", value="any", emoji="🦅", default=True)] + [
             discord.SelectOption(label=n, value=k, emoji=e, description=SPEC_HINTS[k]) for k, e, n in SPECS]
+        add_when(self, "deadline", 1, 2)
 
-    @discord.ui.select(placeholder="Для кого задание?", options=[discord.SelectOption(label="—")])
+    def summary(self) -> str:
+        from cogs.timepick import when_text
+        who = next((f"{e} {n}" for k, e, n in SPECS if k == self.spec_value), "🦅 любой легионер")
+        return f"🎯 **Новое задание**\nДля кого: {who}\nАктуально до: {when_text(self)}\nДальше — «Текст»."
+
+    async def on_when(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(content=self.summary(), view=self)
+
+    @discord.ui.select(placeholder="Для кого задание?", options=[discord.SelectOption(label="—")], row=0)
     async def spec(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
         value = select.values[0]
-        await interaction.response.send_modal(JobForm("" if value == "any" else value))
+        self.spec_value = "" if value == "any" else value
+        for o in select.options:
+            o.default = o.value == value
+        await interaction.response.edit_message(content=self.summary(), view=self)
+
+    @discord.ui.button(label="Текст", emoji="📝", style=discord.ButtonStyle.success, row=3)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(JobForm(self))
 
 
 # ================= 🎯 СПЕЦИАЛИЗАЦИИ =================
@@ -1060,7 +1081,8 @@ class Legion(commands.Cog):
         if not is_officer(interaction.user):
             await say(interaction, "⛔ Задания выкладывают офицеры.")
             return
-        await say(interaction, "🎯 Для кого задание?", view=JobSpecView())
+        view = JobSpecView()
+        await say(interaction, view.summary(), view=view)
 
     @app_commands.command(name="путь_настроить", description="Условия для звания в «Пути легионера» (офицеры)")
     @app_commands.describe(звание="Для какого звания", дней="Дней в Легионе", операций="Операций с явкой",
