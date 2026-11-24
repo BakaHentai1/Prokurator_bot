@@ -370,8 +370,8 @@ def auto_jobs_for(member: discord.Member) -> list[dict]:
                 if now < g["starts_at"] <= now + 86400 and member.id not in industry.db.gat_people(g["id"], "going"):
                     result.append({"kind": "auto", "spec": "logist",
                                    "title": f"⛏️ Сбор на добычу: {g['what']}",
-                                   "details": f"{g['place'] or ''} — <t:{g['starts_at']}:R>. Нажми «Иду» на карточке.",
-                                   "url": link(g["channel_id"], g["message_id"])})
+                                   "details": f"{g['place'] or ''} — <t:{g['starts_at']}:R>. Пойдёшь?",
+                                   "url": link(g["channel_id"], g["message_id"]), "gat_id": g["id"]})
     except Exception:
         log.exception("Задания: объекты/сборы")
     return result
@@ -417,6 +417,12 @@ class JobOfferView(discord.ui.View):
         self.skip = skip
         if job["kind"] == "auto":
             self.remove_item(self.take)
+            if job.get("gat_id"):
+                go = discord.ui.Button(label="Иду", emoji="✅", style=discord.ButtonStyle.success)
+                go.callback = self.go_gathering
+                self.remove_item(self.other)  # «Иду» — первой
+                self.add_item(go)
+                self.add_item(self.other)
             if job.get("url"):
                 self.add_item(discord.ui.Button(label="Открыть", emoji="🔗", url=job["url"]))
 
@@ -432,6 +438,23 @@ class JobOfferView(discord.ui.View):
         await interaction.response.edit_message(
             content="✅ Задание твоё. Когда выполнишь — «📋 Мои задания» в меню → «Готово».", view=None)
         await dm(interaction.client, j["author_id"], f"🎯 {interaction.user.display_name} взял задание «{j['title']}».")
+
+    async def go_gathering(self, interaction: discord.Interaction) -> None:
+        from cogs import industry
+        g = industry.db.gat(self.job["gat_id"])
+        if g is None or g["status"] != "open":
+            await interaction.response.edit_message(content="Сбор уже закрыт.", embed=None, view=None)
+            return
+        industry.db.gat_answer(g["id"], interaction.user.id, "going")
+        await interaction.response.edit_message(
+            content=f"✅ Записал тебя на сбор «{g['what']}» — <t:{g['starts_at']}:R>. За 15 минут напомню.",
+            embed=None, view=None)
+        try:  # обновить карточку сбора
+            channel = interaction.client.get_channel(g["channel_id"])
+            if channel and g["message_id"]:
+                await channel.get_partial_message(g["message_id"]).edit(embed=industry.gat_embed(industry.db.gat(g["id"])))
+        except discord.HTTPException:
+            pass
 
     @discord.ui.button(label="Другое", emoji="🔄", style=discord.ButtonStyle.secondary)
     async def other(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
