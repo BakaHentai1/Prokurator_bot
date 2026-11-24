@@ -515,6 +515,26 @@ class TButton(discord.ui.DynamicItem[discord.ui.Button], template=r"tour:(?P<tid
                 await say(interaction, "⛔ Отменить может организатор.")
                 return
             db.x("UPDATE tournaments SET status = 'cancelled' WHERE id = ?", (t["id"],))
+        elif self.act == "start":
+            if interaction.user.id != t["author_id"] and not can_create(interaction.user):
+                await say(interaction, "⛔ Начать турнир может организатор.")
+                return
+            players = [p["user_id"] for p in
+                       db.q("SELECT user_id FROM t_players WHERE tournament_id = ?", (t["id"],))]
+            if len(players) < 2:
+                await say(interaction, "Нужно хотя бы 2 записавшихся бойца.")
+                return
+            now = int(time.time())
+            db.x("UPDATE tournaments SET starts_at = ?, status = 'running' WHERE id = ?", (now, t["id"]))
+            t = db.q("SELECT * FROM tournaments WHERE id = ?", (self.tid,))[0]
+            await interaction.response.edit_message(embed=t_embed(t), view=None)
+            await interaction.channel.send(f"⚔️ {interaction.user.mention} открыл турнир «{t['name']}» досрочно!",
+                                           allowed_mentions=discord.AllowedMentions.none())
+            try:
+                await start_round(interaction.client, t["id"], players)
+            except Exception:
+                log.exception("Старт турнира %s", t["id"])
+            return
         t = db.q("SELECT * FROM tournaments WHERE id = ?", (self.tid,))[0]
         await interaction.response.edit_message(embed=t_embed(t), view=t_view(t))
 
@@ -525,6 +545,7 @@ def t_view(t: dict) -> Optional[discord.ui.View]:
     view = discord.ui.View(timeout=None)
     view.add_item(TButton(t["id"], "join", "Записаться", "📝", discord.ButtonStyle.success))
     view.add_item(TButton(t["id"], "leave", None, "↩️"))
+    view.add_item(TButton(t["id"], "start", None, "▶️"))
     view.add_item(TButton(t["id"], "cancel", None, "🚫"))
     return view
 
