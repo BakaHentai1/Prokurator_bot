@@ -7,7 +7,7 @@
 - Актуальное: операции, сборы, голосования, выборы, эдикты — где ещё не ответил.
 - Получить задание: открытые задания от офицеров (/задание) и автоматические
   (обновить склад, обслужить объект, сбор на добычу), с учётом специализации.
-- Специализации: роли «Логист», «Танкист»… (бот создаёт их сам), видны в профиле.
+- Специализации на римский лад: «Фрументарий», «Катафрактарий»… (бот создаёт роли сам), видны в профиле.
 - Путь легионера: прогресс до следующего звания; пороги — /путь_настроить (офицеры).
 - Рапорты командованию: карточка в «Сенате», ответ офицера приходит в личку.
 - Предложения: голос легионеров 👍/👎, решение офицеров.
@@ -32,16 +32,32 @@ log = logging.getLogger("legion")
 
 DB_PATH: Path = config.DATA_DIR / "legion_hub.db"
 
-SPECS = [
-    ("logist", "🚚", "Логист"),
-    ("tank", "🛡️", "Танкист"),
-    ("arty", "💥", "Артиллерия"),
-    ("medic", "🩺", "Медик"),
-    ("infantry", "🗡️", "Пехота"),
-    ("engineer", "🔧", "Инженер"),
-    ("navy", "⚓", "Флот"),
-    ("scout", "🔭", "Разведка"),
+SPECS = [  # (ключ, значок, римское название)
+    ("logist", "🌾", "Фрументарий"),
+    ("tank", "🛡️", "Катафрактарий"),
+    ("arty", "🏹", "Баллистарий"),
+    ("medic", "🩺", "Капсарий"),
+    ("infantry", "🗡️", "Гастат"),
+    ("engineer", "📐", "Архитект"),
+    ("navy", "⚓", "Классиарий"),
+    ("scout", "🔭", "Эксплоратор"),
+    ("pilot", "🦅", "Аквилифер"),
 ]
+SPEC_HINTS = {
+    "logist": "логистика и снабжение",
+    "tank": "танки и бронетехника",
+    "arty": "артиллерия",
+    "medic": "медик",
+    "infantry": "пехота",
+    "engineer": "инженер: стройка, укрепления",
+    "navy": "флот",
+    "scout": "разведка",
+    "pilot": "пилот",
+}
+OLD_SPEC_NAMES = {  # прежние названия ролей — переименовываются автоматически
+    "logist": "Логист", "tank": "Танкист", "arty": "Артиллерия", "medic": "Медик", "infantry": "Пехота",
+    "engineer": "Инженер", "navy": "Флот", "scout": "Разведка",
+}
 SPEC = {k: (e, n) for k, e, n in SPECS}
 
 REPORT_KINDS = {
@@ -517,7 +533,7 @@ class JobSpecView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=300)
         self.spec.options = [discord.SelectOption(label="Любой легионер", value="any", emoji="🦅")] + [
-            discord.SelectOption(label=n, value=k, emoji=e) for k, e, n in SPECS]
+            discord.SelectOption(label=n, value=k, emoji=e, description=SPEC_HINTS[k]) for k, e, n in SPECS]
 
     @discord.ui.select(placeholder="Для кого задание?", options=[discord.SelectOption(label="—")])
     async def spec(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
@@ -543,8 +559,12 @@ async def ensure_spec_roles(guild: discord.Guild) -> dict[str, discord.Role]:
         role = guild.get_role(known[key]) if key in known else None
         if role is None:
             role = discord.utils.get(guild.roles, name=name)
+        if role is None and key in OLD_SPEC_NAMES:
+            role = discord.utils.get(guild.roles, name=OLD_SPEC_NAMES[key])
         if role is None:
             role = await guild.create_role(name=name, mentionable=True, reason="Специализации Легиона")
+        elif role.name != name:
+            await role.edit(name=name, reason="Римские названия специализаций")
         db.set_meta(f"spec:{key}", str(role.id))
         roles[key] = role
     return roles
@@ -554,7 +574,8 @@ class SpecView(discord.ui.View):
     def __init__(self, member: discord.Member) -> None:
         super().__init__(timeout=300)
         mine = my_specs(member)
-        self.pick.options = [discord.SelectOption(label=n, value=k, emoji=e, default=k in mine) for k, e, n in SPECS]
+        self.pick.options = [discord.SelectOption(label=n, value=k, emoji=e, description=SPEC_HINTS[k],
+                                                  default=k in mine) for k, e, n in SPECS]
         self.pick.max_values = 3
 
     @discord.ui.select(placeholder="До трёх специализаций", min_values=0, options=[discord.SelectOption(label="—")])
