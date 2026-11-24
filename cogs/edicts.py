@@ -331,6 +331,8 @@ class EdictSetupView(discord.ui.View):
                        options=[discord.SelectOption(label=label, value=key) for key, label in PINGS.items()], row=0)
     async def ping(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
         self.draft["ping"] = select.values[0]
+        for o in select.options:
+            o.default = o.value == self.draft["ping"]
         await interaction.response.edit_message(content=self.summary(), embed=self.preview(), view=self)
 
     @discord.ui.select(placeholder="Кнопка «Принято»: да", options=[
@@ -339,6 +341,8 @@ class EdictSetupView(discord.ui.View):
     ], row=1)
     async def ack(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
         self.draft["ack"] = select.values[0] == "1"
+        for o in select.options:
+            o.default = o.value == select.values[0]
         await interaction.response.edit_message(content=self.summary(), embed=self.preview(), view=self)
 
     @discord.ui.button(label="Издать", emoji="📜", style=discord.ButtonStyle.success, row=4)

@@ -404,6 +404,8 @@ class OrderSetupView(discord.ui.View):
     ], row=0)
     async def priority(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
         self.draft["priority"] = select.values[0]
+        for o in select.options:
+            o.default = o.value == self.draft["priority"]
         await interaction.response.edit_message(content=self.summary(), view=self)
 
     @discord.ui.button(label="Опубликовать", emoji="🏭", style=discord.ButtonStyle.success, row=3)

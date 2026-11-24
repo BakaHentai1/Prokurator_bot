@@ -648,6 +648,16 @@ class ElectionSetupView(discord.ui.View):
         self.done = False
         if not custom:  # у Консула и Легата правило выдвижения фиксировано
             self.remove_item(self.nominees)
+        self.sync()
+
+    def sync(self) -> None:
+        """Меню показывают выбранное, а не сбрасываются на подсказку."""
+        d = self.draft
+        for o in self.audience.options:
+            o.default = o.value == d["audience"]
+        for o in self.nominees.options:
+            o.default = o.value == d["nominees"]
+        self.role.default_values = [discord.Object(id=d["role_id"])] if d["role_id"] else []
 
     def summary(self) -> str:
         d = self.draft
@@ -664,6 +674,7 @@ class ElectionSetupView(discord.ui.View):
                        min_values=0, max_values=1, row=0)
     async def role(self, interaction: discord.Interaction, select: discord.ui.RoleSelect) -> None:
         self.draft["role_id"] = select.values[0].id if select.values else None
+        self.sync()
         await interaction.response.edit_message(content=self.summary(), view=self)
 
     @discord.ui.select(placeholder="Участвуют: весь Легион",
@@ -671,6 +682,7 @@ class ElectionSetupView(discord.ui.View):
                        row=1)
     async def audience(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
         self.draft["audience"] = select.values[0]
+        self.sync()
         await interaction.response.edit_message(content=self.summary(), view=self)
 
     @discord.ui.select(placeholder="Кто может выдвигаться: все легионеры",
@@ -678,6 +690,7 @@ class ElectionSetupView(discord.ui.View):
                                 for key, label in NOMINEES.items()], row=2)
     async def nominees(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
         self.draft["nominees"] = select.values[0]
+        self.sync()
         await interaction.response.edit_message(content=self.summary(), view=self)
 
     @discord.ui.button(label="Объявить выборы", emoji="🏛️", style=discord.ButtonStyle.success, row=3)
