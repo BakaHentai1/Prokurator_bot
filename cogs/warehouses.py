@@ -344,58 +344,56 @@ def expires_at(wh: dict) -> int:
     return int(wh["refreshed_at"]) + EXPIRE_HOURS * 3600
 
 
+STATUS_DOTS = {"active": "🟢", "maintenance": "🟡", "moved": "🔵", "closed": "⚫"}
+
+
 def card_embed(wh: dict) -> discord.Embed:
+    """Компактная карточка: 3–4 строки вместо таблицы полей."""
     status, color = STATUSES.get(wh["status"], STATUSES["active"])
-    e = discord.Embed(title=f"Склад №{wh['id']} · {wh['name']}", color=color)
-    e.add_field(name="Гекс", value=wh["region"], inline=True)
-    e.add_field(name="Регион", value=wh["coords"] or "—", inline=True)
-    e.add_field(name="Владелец", value=f"<@{wh['owner_id']}>", inline=True)
-    e.add_field(name="Назначение", value=wh["purpose"] or "—", inline=True)
-    e.add_field(name="Категория", value=CATEGORIES.get(wh["category"], wh["category"]), inline=True)
-    e.add_field(name="Статус", value=status, inline=True)
-    if wh["comment"]:
-        e.add_field(name="Комментарий", value=wh["comment"], inline=False)
-    e.add_field(name="Создан", value=f"<t:{wh['game_created_at']}:f>", inline=True)
-    e.add_field(
-        name="Последнее обновление",
-        value=f"<t:{wh['refreshed_at']}:f>\n<t:{wh['refreshed_at']}:R>",
-        inline=True,
-    )
+    title = f"📦 №{wh['id']} · {wh['name']}"
+    if wh["category"] != "general":
+        title += " " + CATEGORIES[wh["category"]].split()[0]
+    lines = []
+    place = wh["region"] + (f" / {wh['coords']}" if wh["coords"] else "")
+    lines.append(f"📍 {place} · 👤 <@{wh['owner_id']}>")
+    meta = []
+    if wh["purpose"]:
+        meta.append(f"🎯 {wh['purpose']}")
+    if wh["status"] != "active":
+        meta.append(status)
+    if meta:
+        lines.append(" · ".join(meta))
     if wh["status"] != "closed":
         expires = expires_at(wh)
-        if expires <= time.time():
-            value = f"⚠️ Срок истёк <t:{expires}:R>"
-        else:
-            value = f"<t:{expires}:R>"
-        e.add_field(name="Удалится без обновления", value=value, inline=True)
+        tail = (f"⚠️ срок истёк <t:{expires}:R>" if expires <= time.time()
+                else f"⏳ удалится <t:{expires}:R>")
+        lines.append(f"♻️ обновлён <t:{wh['refreshed_at']}:R> · {tail}")
+    if wh["comment"]:
+        lines.append(f"💬 {wh['comment'][:200]}")
     if wh["category"] == "personal":
-        pw_text = "🔒 Личный склад — пароль получает только владелец"
-    else:
-        pw_text = "🔒 Выдаётся в личные сообщения по кнопке «Пароль»"
-    e.add_field(name="Пароль", value=pw_text, inline=False)
-    e.set_footer(text="Карточка изменена")
-    e.timestamp = datetime.fromtimestamp(wh["updated_at"], timezone.utc)
+        lines.append("🔒 пароль — только владельцу")
+    e = discord.Embed(title=f"{STATUS_DOTS.get(wh['status'], '')} {title}", description="\n".join(lines),
+                      color=color)
     return e
 
 
-OPEN_BUTTONS = [
-    ("pw", "Пароль", "🔑", discord.ButtonStyle.success, 0),
-    ("edit", "Изменить", "✏️", discord.ButtonStyle.secondary, 0),
-    ("move", "Место", "📍", discord.ButtonStyle.secondary, 0),
-    ("owner", "Владелец", "👤", discord.ButtonStyle.secondary, 0),
-    ("setpw", "Сменить пароль", "🔄", discord.ButtonStyle.secondary, 1),
-    ("status", "Статус", "📊", discord.ButtonStyle.secondary, 1),
-    ("log", "Журнал", "📜", discord.ButtonStyle.secondary, 1),
-    ("refresh", "Обновил", "♻️", discord.ButtonStyle.primary, 1),
+# Действия в меню «⋯ Ещё»
+MENU_OPEN = [
+    ("edit", "Изменить данные", "✏️"),
+    ("move", "Изменить место", "📍"),
+    ("owner", "Сменить владельца", "👤"),
+    ("setpw", "Сменить пароль", "🔄"),
+    ("status", "Статус / категория", "📊"),
+    ("log", "Журнал", "📜"),
 ]
-CLOSED_BUTTONS = [
-    ("status", "Статус", "📊", discord.ButtonStyle.secondary, 0),
-    ("log", "Журнал", "📜", discord.ButtonStyle.secondary, 0),
+MENU_CLOSED = [
+    ("status", "Статус / категория", "📊"),
+    ("log", "Журнал", "📜"),
 ]
 
 
 class CardButton(discord.ui.DynamicItem[discord.ui.Button], template=r"wh:(?P<action>[a-z]+):(?P<wid>[0-9]+)"):
-    """Кнопка карточки склада. Работает и после перезапуска бота."""
+    """Кнопка карточки склада. Работает и после перезапуска бота (в том числе на старых карточках)."""
 
     def __init__(
         self,
@@ -420,10 +418,32 @@ class CardButton(discord.ui.DynamicItem[discord.ui.Button], template=r"wh:(?P<ac
         await on_card_button(interaction, self.action, self.wid)
 
 
+class CardMenu(discord.ui.DynamicItem[discord.ui.Select], template=r"whm:(?P<wid>[0-9]+)"):
+    """Меню «⋯ Ещё» на карточке склада."""
+
+    def __init__(self, wid: int, closed: bool = False) -> None:
+        options = [discord.SelectOption(label=label, value=action, emoji=emoji)
+                   for action, label, emoji in (MENU_CLOSED if closed else MENU_OPEN)]
+        super().__init__(discord.ui.Select(placeholder="⋯ Ещё", options=options, custom_id=f"whm:{wid}"))
+        self.wid = wid
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Select, match, /):
+        menu = cls(int(match["wid"]))
+        menu.item.options = item.options
+        return menu
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        action = interaction.data.get("values", [""])[0]
+        await on_card_button(interaction, action, self.wid)
+
+
 def card_view(wh: dict) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
-    for action, label, emoji, style, row in (CLOSED_BUTTONS if wh["status"] == "closed" else OPEN_BUTTONS):
-        view.add_item(CardButton(action, wh["id"], label, emoji, style, row))
+    if wh["status"] != "closed":
+        view.add_item(CardButton("pw", wh["id"], "Пароль", "🔑", discord.ButtonStyle.success, 0))
+        view.add_item(CardButton("refresh", wh["id"], "Обновил", "♻️", discord.ButtonStyle.primary, 0))
+    view.add_item(CardMenu(wh["id"], closed=wh["status"] == "closed"))
     return view
 
 
@@ -918,20 +938,13 @@ async def clear_reminders(client: discord.Client, wid: int) -> None:
 async def send_reminder(client: discord.Client, wh: dict, stage: int) -> None:
     expires = expires_at(wh)
     place = wh["region"] + (f" / {wh['coords']}" if wh["coords"] else "")
-    title = f"склад №{wh['id']} «{wh['name']}» ({place})"
-    if stage >= 3:
-        text = (
-            f"❗ {title} не обновлялся {EXPIRE_HOURS} часов — вероятно, игра его уже удалила.\n"
-            "Если склад цел, обновите его в игре и нажмите «Обновил». Иначе закройте карточку (Статус → Закрыт)."
-        )
-    else:
-        text = (
-            f"⏰ Нужно обновить {title}!\n"
-            f"Без обновления удалится <t:{expires}:R> (<t:{expires}:f>). "
-            "После обновления в игре нажмите «Обновил»."
-        )
+    name = f"№{wh['id']} «{wh['name']}» ({place})"
     if jump_url(wh):
-        text += f"\nКарточка: {jump_url(wh)}"
+        name = f"[{name}]({jump_url(wh)})"
+    if stage >= 3:
+        text = f"❗ Склад {name} не обновлялся {EXPIRE_HOURS} ч — возможно, удалён игрой."
+    else:
+        text = f"⏰ Обновите склад {name} — удалится <t:{expires}:R>."
     view = discord.ui.View(timeout=None)
     view.add_item(CardButton("refresh", wh["id"], "Обновил", "♻️", discord.ButtonStyle.success))
     await clear_reminders(client, wh["id"])  # остаётся только самое свежее напоминание
@@ -961,30 +974,26 @@ async def send_reminder(client: discord.Client, wh: dict, stage: int) -> None:
 # ---------- списки складов и закреплённая панель ----------
 
 async def send_list(interaction: discord.Interaction, items: list[dict], title: str, empty: str) -> None:
-    """Отправляет список складов, который видит только нажавший."""
+    """Компактный список складов, который видит только нажавший."""
     if not items:
         await interaction.response.send_message(empty, ephemeral=True)
         return
     lines = []
-    for w in items[:20]:
-        line = f"**№{w['id']} · {w['name']}** — {w['region']}"
-        if w["coords"]:
-            line += f" ({w['coords']})"
-        line += f"\n{STATUSES[w['status']][0]} · {w['purpose'] or '—'} · <@{w['owner_id']}>"
-        line += f" · ♻️ <t:{w['refreshed_at']}:R>"
-        if w["category"] in ("officer", "personal"):
-            line += " · " + CATEGORIES[w["category"]].split()[0]
+    for w in items[:25]:
+        place = w["region"] + (f" / {w['coords']}" if w["coords"] else "")
+        name = f"**№{w['id']} {w['name']}**"
         if jump_url(w):
-            line += f" · [карточка]({jump_url(w)})"
-        lines.append(line)
-    embed = discord.Embed(
-        title=f"{title}: {len(items)}",
-        description="\n\n".join(lines)[:4000],
-        color=discord.Color.dark_red(),
-    )
-    if len(items) > 20:
-        embed.set_footer(text="Показаны первые 20 — для точного поиска используйте /склад найти")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+            name = f"[{name}]({jump_url(w)})"
+        mark = STATUS_DOTS.get(w["status"], "")
+        if w["category"] != "general":
+            mark += CATEGORIES[w["category"]].split()[0]
+        lines.append(f"{mark} {name} — {place} · <@{w['owner_id']}> · ♻️ <t:{w['refreshed_at']}:R>")
+    embed = discord.Embed(title=f"{title}: {len(items)}", description="\n".join(lines)[:4000],
+                          color=discord.Color.dark_red())
+    if len(items) > 25:
+        embed.set_footer(text="Показаны первые 25 — точнее: /склад найти")
+    await interaction.response.send_message(embed=embed, ephemeral=True,
+                                            allowed_mentions=discord.AllowedMentions.none())
 
 
 def sort_key(w: dict) -> tuple:
@@ -992,7 +1001,7 @@ def sort_key(w: dict) -> tuple:
 
 
 class PanelView(discord.ui.View):
-    """Кнопки закреплённой панели в «Секретариуме». Работают и после перезапуска бота."""
+    """Закреплённая панель «Секретариума»: кнопка «Добавить» и меню. Работает после перезапуска."""
 
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -1004,8 +1013,24 @@ class PanelView(discord.ui.View):
             return
         await interaction.response.send_modal(WarehouseForm())
 
-    @discord.ui.button(label="Все склады", emoji="📋", style=discord.ButtonStyle.primary, custom_id="whp:list")
-    async def list_all(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    @discord.ui.select(placeholder="📋 Склады…", custom_id="whp:menu", options=[
+        discord.SelectOption(label="Все склады", value="list", emoji="📋"),
+        discord.SelectOption(label="Мои склады", value="mine", emoji="👤"),
+        discord.SelectOption(label="Сброс складов (Принцепс)", value="reset", emoji="⚠️"),
+    ])
+    async def menu(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
+        choice = select.values[0]
+        if choice == "list":
+            await self.list_all(interaction)
+        elif choice == "mine":
+            await self.mine(interaction)
+        elif choice == "reset":
+            if not can_reset(interaction.user):
+                await deny(interaction, "⛔ Сброс складов доступен только Принцепсу.")
+                return
+            await interaction.response.send_modal(WarResetModal())
+
+    async def list_all(self, interaction: discord.Interaction) -> None:
         if not has(interaction.user, "search"):
             await deny(interaction)
             return
@@ -1014,19 +1039,36 @@ class PanelView(discord.ui.View):
         )
         await send_list(interaction, items, "📋 Склады Легиона", "Складов пока нет.")
 
-    @discord.ui.button(label="Мои склады", emoji="👤", style=discord.ButtonStyle.secondary, custom_id="whp:mine")
-    async def mine(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def mine(self, interaction: discord.Interaction) -> None:
         items = sorted(
             (w for w in db.all() if w["status"] != "closed" and w["owner_id"] == interaction.user.id), key=sort_key
         )
         await send_list(interaction, items, "👤 Ваши склады", "У вас пока нет складов.")
 
-    @discord.ui.button(label="Сброс складов", emoji="⚠️", style=discord.ButtonStyle.danger, custom_id="whp:reset", row=1)
-    async def reset(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    # Старые кнопки на ранее опубликованных панелях продолжают работать
+    @discord.ui.button(label="Все склады", custom_id="whp:list", row=4)
+    async def old_list(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.list_all(interaction)
+
+    @discord.ui.button(label="Мои склады", custom_id="whp:mine", row=4)
+    async def old_mine(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.mine(interaction)
+
+    @discord.ui.button(label="Сброс складов", custom_id="whp:reset", row=4)
+    async def old_reset(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not can_reset(interaction.user):
             await deny(interaction, "⛔ Сброс складов доступен только Принцепсу.")
             return
         await interaction.response.send_modal(WarResetModal())
+
+
+def panel_view() -> discord.ui.View:
+    """Панель для публикации: без «старых» кнопок."""
+    view = PanelView()
+    for item in list(view.children):
+        if getattr(item, "custom_id", "") in ("whp:list", "whp:mine", "whp:reset"):
+            view.remove_item(item)
+    return view
 
 
 # ---------- сброс войны ----------
@@ -1154,17 +1196,9 @@ class WarResetChoice(discord.ui.View):
 
 def panel_embed() -> discord.Embed:
     return discord.Embed(
-        title="🏛️ СЕКРЕТАРИУМ ЛЕГИОНА",
-        description=(
-            "Учёт складов Легиона.\n\n"
-            "➕ **Добавить склад** — зарегистрировать новый склад.\n"
-            "📋 **Все склады** — список складов, доступных вам.\n"
-            "👤 **Мои склады** — склады, где вы владелец, включая личные.\n"
-            "⚠️ **Сброс складов** — закрыть все склады в конце войны (только Принцепс).\n\n"
-            "Пароли выдаются только в личные сообщения кнопкой «🔑 Пароль» на карточке склада. "
-            "После обновления склада в игре нажмите «♻️ Обновил».\n\n"
-            "*Senatus Populusque Legionis*"
-        ),
+        title="🏛️ СЕКРЕТАРИУМ",
+        description="Учёт складов Легиона. Пароли — только в личку, кнопкой 🔑 на карточке.\n"
+                    "Обновили склад в игре — жмите ♻️.",
         color=discord.Color.dark_red(),
     )
 
@@ -1290,7 +1324,7 @@ class Warehouses(commands.Cog):
             channel = self.bot.get_channel(config.SECRETARIUM_CHANNEL_ID) or await self.bot.fetch_channel(
                 config.SECRETARIUM_CHANNEL_ID
             )
-            message = await channel.send(embed=panel_embed(), view=PanelView())
+            message = await channel.send(embed=panel_embed(), view=panel_view())
         except discord.HTTPException as e:
             await interaction.followup.send(f"Не удалось опубликовать панель: {e.text or e}", ephemeral=True)
             return
@@ -1303,6 +1337,25 @@ class Warehouses(commands.Cog):
                 "(или «Управлять сообщениями») либо закрепите вручную"
             )
         await interaction.followup.send(f"✅ Панель опубликована {note}: {message.jump_url}", ephemeral=True)
+
+    @sklad.command(name="обновить_карточки", description="Перерисовать все карточки складов в текущем виде")
+    async def redraw(self, interaction: discord.Interaction) -> None:
+        if not has(interaction.user, "perms"):
+            await deny(interaction)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        done = failed = 0
+        for w in db.all():
+            if not w["message_id"]:
+                continue
+            if await publish_card(self.bot, w["id"]):
+                failed += 1
+            else:
+                done += 1
+        text = f"✅ Карточек обновлено: {done}."
+        if failed:
+            text += f" Не удалось: {failed}."
+        await interaction.followup.send(text, ephemeral=True)
 
     @sklad.command(name="журнал", description="Журнал действий со складом")
     @app_commands.describe(номер="Номер склада (№ на карточке)")
@@ -1378,6 +1431,6 @@ async def setup(bot: commands.Bot) -> None:
         log.warning("SECRETARIUM_CHANNEL_ID не задан — модуль складов выключен. Запустите: python setup.py")
         return
     db = DB(DB_PATH)
-    bot.add_dynamic_items(CardButton)
+    bot.add_dynamic_items(CardButton, CardMenu)
     bot.add_view(PanelView())
     await bot.add_cog(Warehouses(bot))
