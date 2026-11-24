@@ -537,6 +537,16 @@ def profile_embed(member: discord.Member, viewer: discord.abc.User) -> discord.E
         e.add_field(name="🎧 В голосовых",
                     value=f"Неделя: {s['voice_week']:.1f} ч\nМесяц: {s['voice_month']:.1f} ч", inline=True)
 
+    try:
+        from cogs import colosseum
+        if colosseum.db is not None:
+            w, l, d = colosseum.db.record(member.id)
+            if w or l or d:
+                e.add_field(name="🏟️ Арена", value=f"{w} побед · {l} пораж. · {d} ничьих\n"
+                                                    f"{colosseum.title_for(w) or ''}", inline=True)
+    except Exception:
+        log.exception("Профиль: арена")
+
     if s["thanks"]:
         lines = [f"Всего: **{s['thanks']}**"]
         for t in s["thanks_recent"]:
