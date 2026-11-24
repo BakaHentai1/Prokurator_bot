@@ -316,6 +316,45 @@ class Duel:
         return text
 
 
+def track(tid: Optional[int], msg: Optional[discord.Message]) -> None:
+    """Запоминает служебное сообщение турнира — после финала оно будет удалено."""
+    if tid is None or msg is None:
+        return
+    key = f"tmsgs:{tid}"
+    old = db.meta(key) or ""
+    db.set_meta(key, (old + "," if old else "") + f"{msg.channel.id}:{msg.id}")
+
+
+async def cleanup_tournament(client: discord.Client, tid: int, keep: int, delay: int = 60) -> None:
+    """Через минуту после финала убирает флуд турнира: объявления раундов, итоги боёв, служебные сообщения."""
+    await asyncio.sleep(delay)
+    t = db.q("SELECT * FROM tournaments WHERE id = ?", (tid,))[0]
+    for item in filter(None, (db.meta(f"tmsgs:{tid}") or "").split(",")):
+        cid, mid = map(int, item.split(":"))
+        channel = client.get_channel(cid)
+        if channel and mid != keep:
+            try:
+                await channel.get_partial_message(mid).delete()
+            except discord.HTTPException:
+                pass
+            await asyncio.sleep(0.5)
+    db.set_meta(f"tmsgs:{tid}", "")
+    channel = client.get_channel(t["channel_id"])
+    if channel is None or not t["message_id"]:
+        return
+    try:  # системные «бот начал ветку» за время турнира
+        async for m in channel.history(after=discord.Object(id=t["message_id"]), limit=300):
+            if m.type == discord.MessageType.thread_created and m.author.id == client.user.id:
+                await m.delete()
+                await asyncio.sleep(0.5)
+    except discord.HTTPException:
+        pass
+    try:  # убрать пинг с карточки
+        await channel.get_partial_message(t["message_id"]).edit(content=None)
+    except discord.HTTPException:
+        pass
+
+
 async def make_thread(channel: discord.TextChannel, a: discord.Member, b: discord.Member,
                       name: str) -> discord.Thread:
     thread = await channel.create_thread(name=name[:90], type=discord.ChannelType.private_thread, invitable=False,
@@ -348,7 +387,8 @@ async def run_duel(client: discord.Client, a: discord.Member, b: discord.Member,
         await thread.send(text + "\n\n*Ветка закроется через 20 секунд.*")
         channel = colosseum_channel(client) or thread.parent
         if channel:
-            await channel.send(text, allowed_mentions=discord.AllowedMentions(users=True))
+            msg = await channel.send(text, allowed_mentions=discord.AllowedMentions(users=True))
+            track(tournament_id, msg)
         asyncio.create_task(close_thread(thread))
         return winner
     finally:
@@ -528,8 +568,9 @@ class TButton(discord.ui.DynamicItem[discord.ui.Button], template=r"tour:(?P<tid
             db.x("UPDATE tournaments SET starts_at = ?, status = 'running' WHERE id = ?", (now, t["id"]))
             t = db.q("SELECT * FROM tournaments WHERE id = ?", (self.tid,))[0]
             await interaction.response.edit_message(embed=t_embed(t), view=None)
-            await interaction.channel.send(f"⚔️ {interaction.user.mention} открыл турнир «{t['name']}» досрочно!",
-                                           allowed_mentions=discord.AllowedMentions.none())
+            track(t["id"], await interaction.channel.send(
+                f"⚔️ {interaction.user.mention} открыл турнир «{t['name']}» досрочно!",
+                allowed_mentions=discord.AllowedMentions.none()))
             try:
                 await start_round(interaction.client, t["id"], players)
             except Exception:
@@ -677,8 +718,8 @@ async def start_round(client: discord.Client, tid: int, players: list[int]) -> N
         bye = players.pop()
         db.x("INSERT INTO t_matches (tournament_id, round, a_id, b_id, winner_id, status) VALUES (?, ?, ?, NULL, ?, 'done')",
              (tid, rnd, bye, bye))
-        await channel.send(f"🍀 <@{bye}> проходит в следующий раунд без боя.",
-                           allowed_mentions=discord.AllowedMentions.none())
+        track(tid, await channel.send(f"🍀 <@{bye}> проходит в следующий раунд без боя.",
+                                      allowed_mentions=discord.AllowedMentions.none()))
     lines = []
     for a_id, b_id in pairs:
         mid = db.x("INSERT INTO t_matches (tournament_id, round, a_id, b_id, status) VALUES (?, ?, ?, ?, 'running')",
@@ -692,9 +733,9 @@ async def start_round(client: discord.Client, tid: int, players: list[int]) -> N
         asyncio.create_task(tournament_match(client, tid, mid, a, b, channel))
     await refresh_t(client, tid)
     if lines:
-        await channel.send(f"🦁 **{t['name']} — раунд {rnd}!**\n" + "\n".join(lines) +
-                           "\nБои идут в закрытых ветках, ходы — минута на раунд.",
-                           allowed_mentions=discord.AllowedMentions(users=True))
+        track(tid, await channel.send(f"🦁 **{t['name']} — раунд {rnd}!**\n" + "\n".join(lines) +
+                                      "\nБои идут в закрытых ветках, ходы — минута на раунд.",
+                                      allowed_mentions=discord.AllowedMentions(users=True)))
     await maybe_next_round(client, tid)
 
 
@@ -708,8 +749,8 @@ async def tournament_match(client: discord.Client, tid: int, mid: int, a: discor
         winner = await run_duel(client, a, b, thread, tid)
         if winner is None:  # ничья в турнире — решает жребий
             winner = random.choice([a.id, b.id])
-            await channel.send(f"🎲 Ничья! Жребий отдаёт победу <@{winner}>.",
-                               allowed_mentions=discord.AllowedMentions.none())
+            track(tid, await channel.send(f"🎲 Ничья! Жребий отдаёт победу <@{winner}>.",
+                                          allowed_mentions=discord.AllowedMentions.none()))
     except Exception:
         log.exception("Турнирный бой %s", mid)
         winner = random.choice([a.id, b.id])
@@ -761,8 +802,21 @@ async def finish_tournament(client: discord.Client, tid: int, winner_id: int) ->
         note = "\n(роль выдать не удалось — проверьте права бота «Управлять ролями»)"
     db.set_meta("champion", str(winner_id))
     await refresh_t(client, tid)
-    await channel.send(f"👑 **{t['name']} завершён!** Победитель — <@{winner_id}>, новый **{CHAMPION_ROLE}**! "
-                       f"Толпа бросает розы на арену! 🌹{note}", allowed_mentions=discord.AllowedMentions(users=True))
+    rounds = []
+    for r in range(1, t["round"] + 1):
+        fights = []
+        for m in db.q("SELECT * FROM t_matches WHERE tournament_id = ? AND round = ? ORDER BY id", (tid, r)):
+            if m["b_id"] is None:
+                fights.append(f"🍀 <@{m['a_id']}> без боя")
+            else:
+                loser = m["b_id"] if m["winner_id"] == m["a_id"] else m["a_id"]
+                fights.append(f"<@{m['winner_id']}> 🗡️ ~~<@{loser}>~~")
+        name = "Финал" if r == t["round"] else f"Раунд {r}"
+        rounds.append(f"**{name}:** " + " · ".join(fights))
+    text = (f"👑 **{t['name']} завершён!** Победитель — <@{winner_id}>, новый **{CHAMPION_ROLE}**! "
+            f"Толпа бросает розы на арену! 🌹{note}\n\n" + "\n".join(rounds))
+    final = await channel.send(text[:2000], allowed_mentions=discord.AllowedMentions(users=[discord.Object(winner_id)]))
+    asyncio.create_task(cleanup_tournament(client, tid, final.id))
 
 
 # ================= ВОПРОС ДНЯ =================
