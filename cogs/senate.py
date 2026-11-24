@@ -720,14 +720,20 @@ class PromoDecisionView(discord.ui.View):
                 continue
             try:
                 await member.add_roles(rank, reason=f"Представление №{self.pid}")
-                if self.remove_old:
-                    old = [r for r in member.roles if r.id in ladder and r.id != rank.id]
-                    if old:
-                        await member.remove_roles(*old, reason=f"Представление №{self.pid}: повышение")
-                db.promo_result(self.pid, uid, "approved")
             except discord.HTTPException:
-                problems.append(f"{member.mention}: не хватает прав (роль бота должна быть выше)")
+                problems.append(f"{member.mention}: не могу выдать {rank.mention} — роль бота должна стоять "
+                                f"выше неё в настройках ролей")
                 db.promo_result(self.pid, uid, "rejected")
+                continue
+            db.promo_result(self.pid, uid, "approved")
+            if self.remove_old:
+                old = [r for r in member.roles if r.id in ladder and r.id != rank.id]
+                if old:
+                    try:
+                        await member.remove_roles(*old, reason=f"Представление №{self.pid}: повышение")
+                    except discord.HTTPException:
+                        problems.append(f"{member.mention}: звание выдано, но не смог снять старое "
+                                        f"({', '.join(r.mention for r in old)})")
         done = [c["user_id"] for c in db.promo_candidates(self.pid) if c["result"] == "approved"]
         db.promo_set(self.pid, status="approved" if done else "rejected", decided_by=interaction.user.id,
                      decided_ts=int(time.time()))
