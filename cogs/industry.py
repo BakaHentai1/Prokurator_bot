@@ -212,7 +212,8 @@ async def dm(client: discord.Client, user_id: int, text: str) -> None:
 
 
 def link(row: dict) -> str:
-    return f"https://discord.com/channels/{config.GUILD_ID}/{row['channel_id']}/{row['message_id']}"
+    return (f"https://discord.com/channels/{config.GUILD_ID}/{row['channel_id']}"
+            + (f"/{row['message_id']}" if row['message_id'] else ""))
 
 
 def hours_text(seconds: int) -> str:

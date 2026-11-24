@@ -7,6 +7,8 @@
    • когда окно закончило работу (кнопки исчезли) — через 3 минуты.
 2. Временные объявления в каналах (напоминания, «не явился», «MPF ждёт» и т. п.)
    ставятся в очередь через later() и удаляются в срок — очередь переживает перезапуск.
+3. Закрытые карточки (доставленные/отменённые заказы, забранные MPF, снятые объекты,
+   прошедшие сборы и операции) удаляются через CARD_KEEP после закрытия.
 """
 import asyncio
 import json
@@ -23,6 +25,16 @@ log = logging.getLogger("janitor")
 SHORT = 180          # простой ответ
 LONG = 14 * 60       # окно с кнопками
 QUEUE = config.DATA_DIR / "cleanup.json"
+CARD_KEEP = 6 * 3600  # закрытая карточка висит ещё 6 часов
+
+# (модуль, атрибут БД, таблица, условие «закрыта и пора удалять»)
+CLOSED_CARDS = [
+    ("cogs.prefecture", "db", "orders", "status IN ('delivered', 'cancelled') AND updated_at < :t"),
+    ("cogs.prefecture", "mpf", "mpf_jobs", "status IN ('collected', 'cancelled') AND COALESCE(closed_at, 0) < :t"),
+    ("cogs.industry", "db", "facilities", "status = 'removed'"),
+    ("cogs.industry", "db", "gatherings", "status IN ('done', 'cancelled') AND starts_at < :t"),
+    ("cogs.operations", "db", "operations", "status IN ('done', 'cancelled') AND starts_at < :t"),
+]
 
 
 # ---------- 1. скрытые ответы ----------
@@ -119,9 +131,11 @@ class Janitor(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.sweep.start()
+        self.cards.start()
 
     async def cog_unload(self) -> None:
         self.sweep.cancel()
+        self.cards.cancel()
 
     @tasks.loop(minutes=1)
     async def sweep(self) -> None:
@@ -147,7 +161,37 @@ class Janitor(commands.Cog):
             await asyncio.sleep(0.5)
         _save(keep)
 
+    @tasks.loop(minutes=10)
+    async def cards(self) -> None:
+        import importlib
+        t = int(time.time()) - CARD_KEEP
+        for module, attr, table, where in CLOSED_CARDS:
+            try:
+                store = getattr(importlib.import_module(module), attr, None)
+                if store is None:
+                    continue
+                rows = store.conn.execute(
+                    f"SELECT id, channel_id, message_id FROM {table} "
+                    f"WHERE message_id IS NOT NULL AND {where} LIMIT 50", {"t": t}).fetchall()
+            except Exception as e:
+                log.warning("Уборка %s: %s", table, e)
+                continue
+            for rid, cid, mid in rows:
+                channel = self.bot.get_channel(cid) if cid else None
+                if channel is not None:
+                    try:
+                        await channel.get_partial_message(mid).delete()
+                    except discord.NotFound:
+                        pass
+                    except discord.HTTPException as e:
+                        log.warning("Не удалось убрать карточку %s №%s: %s", table, rid, e)
+                        continue
+                    await asyncio.sleep(0.5)
+                store.conn.execute(f"UPDATE {table} SET message_id = NULL WHERE id = ?", (rid,))
+                store.conn.commit()
+
     @sweep.before_loop
+    @cards.before_loop
     async def _wait(self) -> None:
         await self.bot.wait_until_ready()
 

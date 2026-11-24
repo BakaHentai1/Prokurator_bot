@@ -192,7 +192,8 @@ async def no_rights(interaction: discord.Interaction, text: str = "⛔ Это д
 # ---------- оформление ----------
 
 def order_link(o: dict) -> str:
-    return f"https://discord.com/channels/{config.GUILD_ID}/{o['channel_id']}/{o['message_id']}"
+    return (f"https://discord.com/channels/{config.GUILD_ID}/{o['channel_id']}"
+            + (f"/{o['message_id']}" if o['message_id'] else ""))
 
 
 def overdue(o: dict) -> bool:
@@ -510,7 +511,8 @@ MPF_LATE = 2 * 3600  # через столько после готовности
 
 
 def mpf_link(j: dict) -> str:
-    return f"https://discord.com/channels/{config.GUILD_ID}/{j['channel_id']}/{j['message_id']}"
+    return (f"https://discord.com/channels/{config.GUILD_ID}/{j['channel_id']}"
+            + (f"/{j['message_id']}" if j['message_id'] else ""))
 
 
 def mpf_embed(j: dict) -> discord.Embed:
@@ -740,81 +742,6 @@ class PrefecturePanel(discord.ui.View):
         view = ResourceView(interaction.user)
         await interaction.response.send_message(embed=res_embed(), view=view if view.children else None,
                                                 ephemeral=True)
-
-
-    @discord.ui.button(label="Очистка", emoji="⚠️", custom_id="pref:reset", row=4)
-    async def reset(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        from cogs.warehouses import can_reset
-        if not can_reset(interaction.user):
-            await no_rights(interaction, "⛔ Очистка Префектуры доступна только Принцепсу.")
-            return
-        await interaction.response.send_modal(PrefResetModal())
-
-
-class PrefResetModal(discord.ui.Modal, title="⚠️ Очистка Префектуры"):
-    confirm = discord.ui.TextInput(label="Для подтверждения напишите: ОЧИСТКА", max_length=10)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        from cogs.warehouses import can_reset
-        if not can_reset(interaction.user):
-            await no_rights(interaction, "⛔ Очистка Префектуры доступна только Принцепсу.")
-            return
-        if self.confirm.value.strip().upper() != "ОЧИСТКА":
-            await interaction.response.send_message("Очистка отменена: подтверждение не совпало.", ephemeral=True)
-            return
-        await interaction.response.send_message("⏳ Очищаю Префектуру… Это может занять пару минут.", ephemeral=True)
-        text = await reset_prefecture(interaction.client, interaction.user)
-        await interaction.edit_original_response(content=text)
-
-
-async def reset_prefecture(client: discord.Client, user: discord.abc.User) -> str:
-    """Закрывает всё открытое в Префектуре и чистит канал (кроме закреплённых сообщений)."""
-    note = ""
-    try:
-        from cogs.backup import send_backup
-        if config.AUDIT_CHANNEL_ID:
-            await send_backup(client, f"перед очисткой Префектуры ({user})")
-            note = "резервная копия — в «Инвентариуме»"
-    except Exception as e:
-        log.error("Копия перед очисткой Префектуры: %s", e)
-        note = "⚠️ резервную копию сделать не удалось"
-    now = int(time.time())
-    c = db.conn
-    counts = {
-        "заказов": c.execute(f"UPDATE orders SET status = 'cancelled', updated_at = ? WHERE status IN "
-                             f"({','.join('?' * len(OPEN))})", (now, *OPEN)).rowcount,
-        "MPF": c.execute("UPDATE mpf_jobs SET status = 'cancelled', closed_at = ? WHERE status = 'queued'",
-                         (now,)).rowcount,
-    }
-    for label, sql in (("объектов", "UPDATE facilities SET status = 'removed' WHERE status = 'active'"),
-                       ("сборов", "UPDATE gatherings SET status = 'cancelled' WHERE status = 'open'"),
-                       ("ресурсов", "UPDATE resources SET amount = 0, updated_by = NULL, updated_at = NULL "
-                                    "WHERE amount != 0")):
-        try:
-            counts[label] = c.execute(sql).rowcount
-        except sqlite3.Error:
-            counts[label] = 0
-    c.commit()
-
-    deleted = 0
-    cid = prefecture_channel_id()
-    channel = client.get_channel(cid) if cid else None
-    if channel is not None:
-        try:
-            deleted = len(await channel.purge(limit=3000, check=lambda m: not m.pinned))
-        except discord.HTTPException as e:
-            note += f"\n⚠️ канал очистить не вышло: {e.text or e} (нужно право «Управлять сообщениями»)"
-
-    summary = ", ".join(f"{k} — {v}" for k, v in counts.items())
-    try:
-        from cogs.consulate import archive
-        await archive(client, f"⚠️ <t:{now}:f> · {user.mention} выполнил **очистку Префектуры**: закрыто {summary}; "
-                              f"удалено сообщений — {deleted}.")
-    except Exception:
-        pass
-    log.info("Очистка Префектуры (%s): %s, сообщений %d", user, summary, deleted)
-    return (f"✅ Префектура очищена. Закрыто: {summary}. Удалено сообщений в канале: **{deleted}**. "
-            f"Закреплённая панель осталась." + (f"\n{note}" if note else ""))
 
 
 def panel_embed() -> discord.Embed:

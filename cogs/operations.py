@@ -193,7 +193,8 @@ def can_create_op(member: discord.abc.User) -> bool:
 # ---------- оформление ----------
 
 def op_link(o: dict) -> str:
-    return f"https://discord.com/channels/{config.GUILD_ID}/{o['channel_id']}/{o['message_id']}"
+    return (f"https://discord.com/channels/{config.GUILD_ID}/{o['channel_id']}"
+            + (f"/{o['message_id']}" if o['message_id'] else ""))
 
 
 def _mentions(ids: list[int], limit: int = 700) -> str:

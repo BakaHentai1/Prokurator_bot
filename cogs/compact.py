@@ -98,7 +98,6 @@ def prefecture_panel() -> type[MenuPanel]:
             ("Новый объект (офицеры)", "🔧", "facility_new"),
             ("Сбор на добычу (офицеры)", "⛏️", "gathering"),
             ("Ресурсы", "📦", "resources"),
-            ("Очистка Префектуры (Принцепс)", "⚠️", "reset"),
         ]
     return PrefectureMenu
 
