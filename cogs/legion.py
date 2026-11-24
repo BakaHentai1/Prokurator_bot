@@ -183,6 +183,19 @@ def is_officer(member: discord.abc.User) -> bool:
     return is_admin(member) or has_any(member, officer_roles())
 
 
+def panel_open() -> bool:
+    return db.meta("open") == "1"
+
+
+async def beta_gate(interaction: discord.Interaction) -> bool:
+    """Пока панель в разработке — пользуются только Принцепс, Консулы и Сенат."""
+    from cogs.consulate import can_create
+    if panel_open() or can_create(interaction.user):
+        return True
+    await say(interaction, "🚧 Панель Легиона ещё в разработке — скоро откроется для всех. Ave!")
+    return False
+
+
 async def say(interaction: discord.Interaction, text: str = None, **kw) -> None:
     kw.setdefault("ephemeral", True)
     kw.setdefault("allowed_mentions", discord.AllowedMentions.none())
@@ -952,14 +965,20 @@ class LegionPanel(discord.ui.View):
 
     @discord.ui.button(label="Актуальное", emoji="📢", style=discord.ButtonStyle.primary, custom_id="leg:actual")
     async def actual(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await beta_gate(interaction):
+            return
         await say(interaction, embed=actual_embed(interaction.user))
 
     @discord.ui.button(label="Получить задание", emoji="🎯", style=discord.ButtonStyle.success, custom_id="leg:job")
     async def job(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await beta_gate(interaction):
+            return
         await get_job(interaction)
 
     @discord.ui.select(placeholder="🦅 Легион…", custom_id="leg:menu", options=[discord.SelectOption(label="—")])
     async def menu(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
+        if not await beta_gate(interaction):
+            return
         choice = select.values[0]
         user = interaction.user
         if choice == "profile":
@@ -1022,6 +1041,18 @@ class Legion(commands.Cog):
         except discord.HTTPException:
             note = "но закрепить не вышло — закрепите вручную"
         await interaction.followup.send(f"✅ Панель опубликована {note}.", ephemeral=True)
+
+    @app_commands.command(name="легион_доступ", description="Открыть или закрыть панель Легиона для всех")
+    @app_commands.describe(для_всех="Да — пользуются все легионеры; нет — только Принцепс, Консулы, Сенат")
+    @app_commands.guild_only()
+    async def access(self, interaction: discord.Interaction, для_всех: bool) -> None:
+        from cogs.consulate import can_create
+        if not can_create(interaction.user):
+            await say(interaction, "⛔ Недостаточно прав.")
+            return
+        db.set_meta("open", "1" if для_всех else "0")
+        await say(interaction, "✅ Панель Легиона открыта для всех." if для_всех
+                  else "🚧 Панель Легиона доступна только Принцепсу, Консулам и Сенату.")
 
     @app_commands.command(name="задание", description="Выложить открытое задание для легионеров (офицеры)")
     @app_commands.guild_only()
