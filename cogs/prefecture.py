@@ -214,25 +214,31 @@ def destination_text(o: dict) -> str:
     return text
 
 
+NEXT_STEP = {
+    "new": ("prod", "В производство", "🏭"),
+    "taken": ("prod", "В производство", "🏭"),
+    "production": ("ship", "Отправлено", "🚚"),
+    "shipped": ("done", "Доставлено", "✅"),
+}
+
+
 def order_embed(o: dict) -> discord.Embed:
     label, color = STATUSES[o["status"]]
     if overdue(o):
         color = discord.Color.red()
-    e = discord.Embed(title=f"🏭 ЗАКАЗ №{o['id']} · {PRIORITIES[o['priority']]}", color=color)
-    e.add_field(name="Что нужно", value=o["items"][:1024], inline=False)
-    e.add_field(name="Куда", value=destination_text(o)[:1024], inline=False)
-    e.add_field(name="Заказчик", value=f"<@{o['author_id']}>", inline=True)
+    lines = [o["items"][:1200], ""]
+    lines.append(f"📍 {destination_text(o)}")
+    meta = f"{label} · 🧾 <@{o['author_id']}>"
     if o["deadline"]:
-        mark = "🔴 " if overdue(o) else ""
-        e.add_field(name="Срок", value=f"{mark}<t:{o['deadline']}:f>\n<t:{o['deadline']}:R>", inline=True)
-    e.add_field(name="Статус", value=label, inline=True)
+        meta += f" · {'🔴 ' if overdue(o) else ''}⏳ <t:{o['deadline']}:R>"
+    lines.append(meta)
     takers = db.takers(o["id"])
-    e.add_field(name="Исполнители", value=" ".join(f"<@{u}>" for u in takers)[:1024] or "пока никто", inline=False)
+    if takers:
+        lines.append("🙋 " + " ".join(f"<@{u}>" for u in takers)[:600])
     if o["comment"]:
-        e.add_field(name="Комментарий", value=o["comment"][:1024], inline=False)
-    e.set_footer(text="Обновлено")
-    e.timestamp = datetime.fromtimestamp(o["updated_at"], timezone.utc)
-    return e
+        lines.append(f"💬 {o['comment'][:300]}")
+    prio = PRIORITIES[o["priority"]].split()[0]
+    return discord.Embed(title=f"{prio} Заказ №{o['id']}", description="\n".join(lines)[:4000], color=color)
 
 
 class OrderButton(discord.ui.DynamicItem[discord.ui.Button], template=r"ord:(?P<oid>[0-9]+):(?P<act>[a-z]+)"):
@@ -252,15 +258,15 @@ class OrderButton(discord.ui.DynamicItem[discord.ui.Button], template=r"ord:(?P<
 
 
 def order_view(o: dict) -> Optional[discord.ui.View]:
+    """Одна строка: «Беру», следующий шаг и маленькие ↩️ / 🚫."""
     if o["status"] not in OPEN:
         return None
     view = discord.ui.View(timeout=None)
     view.add_item(OrderButton(o["id"], "take", "Беру", "🙋", discord.ButtonStyle.success, 0))
-    view.add_item(OrderButton(o["id"], "drop", "Отказаться", "↩️", discord.ButtonStyle.secondary, 0))
-    view.add_item(OrderButton(o["id"], "prod", "В производстве", "🏭", discord.ButtonStyle.primary, 1))
-    view.add_item(OrderButton(o["id"], "ship", "Отправлено", "🚚", discord.ButtonStyle.primary, 1))
-    view.add_item(OrderButton(o["id"], "done", "Доставлено", "✅", discord.ButtonStyle.success, 1))
-    view.add_item(OrderButton(o["id"], "cancel", "Отменить", "🚫", discord.ButtonStyle.danger, 2))
+    act, label, emoji = NEXT_STEP[o["status"]]
+    view.add_item(OrderButton(o["id"], act, label, emoji, discord.ButtonStyle.primary, 0))
+    view.add_item(OrderButton(o["id"], "drop", None, "↩️", discord.ButtonStyle.secondary, 0))
+    view.add_item(OrderButton(o["id"], "cancel", None, "🚫", discord.ButtonStyle.secondary, 0))
     return view
 
 
@@ -730,22 +736,9 @@ class PrefecturePanel(discord.ui.View):
 
 def panel_embed() -> discord.Embed:
     return discord.Embed(
-        title="🏭 ПРЕФЕКТУРА ЛЕГИОНА",
-        description=(
-            "Сердце производства Легиона.\n\n"
-            "➕ **Новый заказ** — что нужно, куда (номер склада или место), срок, приоритет.\n"
-            "📋 **Открытые заказы** — что ждёт производства, срочные сверху.\n"
-            "🙋 **Мои заказы** — то, что вы взяли.\n"
-            "🏗️ **Поставил в MPF** — что, где и когда будет готово (можно для заказа). Бот напомнит забрать.\n"
-            "⏳ **Очередь MPF** — что сейчас производится и что уже ждёт.\n"
-            "🏭 **Объекты** — фабрики, заводы, генераторы и когда их обслуживать; ➕ добавляют офицеры.\n"
-            "⛏️ **Сбор на добычу** — офицер объявляет, легионеры жмут «Иду», за 15 минут напоминание.\n"
-            "📦 **Ресурсы** — сколько скрапа, компонентов, матов и чего не хватает.\n\n"
-            "На карточке заказа: 🙋 Беру → 🏭 В производстве → 🚚 Отправлено → ✅ Доставлено.\n"
-            "**Права:** офицеры создают заказы, объекты, сборы и ставят цели по ресурсам. "
-            "Фабрумы берут и ведут заказы, ставят MPF, обслуживают объекты и обновляют ресурсы.\n\n"
-            "*Senatus Populusque Legionis*"
-        ),
+        title="🏭 ПРЕФЕКТУРА",
+        description="Заказы, MPF, объекты, добыча и ресурсы — в меню ниже.\n"
+                    "Офицеры создают, Фабрумы исполняют.",
         color=discord.Color.orange(),
     )
 
@@ -836,7 +829,8 @@ class Prefecture(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            message = await interaction.channel.send(embed=panel_embed(), view=PrefecturePanel())
+            from cogs.compact import prefecture_panel
+            message = await interaction.channel.send(embed=panel_embed(), view=prefecture_panel()())
             db.conn.execute("INSERT OR REPLACE INTO meta VALUES ('channel_id', ?)", (str(interaction.channel.id),))
             db.conn.commit()
         except discord.HTTPException as e:

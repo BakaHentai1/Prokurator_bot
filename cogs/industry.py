@@ -225,27 +225,24 @@ def hours_text(seconds: int) -> str:
 def fac_embed(f: dict) -> discord.Embed:
     now = time.time()
     if f["status"] != "active":
-        state, color = "🗑️ Снят с учёта", discord.Color.dark_grey()
+        dot, state, color = "⚫", "снят с учёта", discord.Color.dark_grey()
     elif f["expires_at"] <= now:
-        state, color = "🔴 Обслуживание закончилось!", discord.Color.red()
+        dot, state, color = "🔴", "без обслуживания!", discord.Color.red()
     elif f["expires_at"] - now <= FACILITY_WARN:
-        state, color = "🟡 Скоро нужно обслужить", discord.Color.gold()
+        dot, state, color = "🟡", "скоро обслуживать", discord.Color.gold()
     else:
-        state, color = "🟢 Работает", discord.Color.green()
-    e = discord.Embed(title=f"🏭 ОБЪЕКТ №{f['id']} · {f['name']}", color=color)
-    if f["kind"]:
-        e.add_field(name="Тип", value=f["kind"], inline=True)
-    if f["place"]:
-        e.add_field(name="Где", value=f["place"], inline=True)
-    e.add_field(name="Ответственный", value=f"<@{f['owner_id']}>", inline=True)
+        dot, state, color = "🟢", "работает", discord.Color.green()
+    lines = []
+    first = " · ".join(x for x in (f["kind"], f["place"]) if x)
+    if first:
+        lines.append(f"📍 {first}")
+    line = f"👤 <@{f['owner_id']}> · {state}"
     if f["status"] == "active":
-        e.add_field(name="Хватит до", value=f"<t:{f['expires_at']}:f>\n<t:{f['expires_at']}:R>", inline=True)
-    e.add_field(name="Обслуживать каждые", value=hours_text(f["interval_s"]), inline=True)
+        line += f" · ⏳ <t:{f['expires_at']}:R>"
+    lines.append(line)
     if f["serviced_by"]:
-        e.add_field(name="Последний раз обслужил", value=f"<@{f['serviced_by']}> · <t:{f['serviced_at']}:R>",
-                    inline=True)
-    e.add_field(name="Состояние", value=state, inline=False)
-    return e
+        lines.append(f"⛽ <@{f['serviced_by']}> <t:{f['serviced_at']}:R> · каждые {hours_text(f['interval_s'])}")
+    return discord.Embed(title=f"{dot} 🏭 №{f['id']} · {f['name']}", description="\n".join(lines), color=color)
 
 
 class FacButton(discord.ui.DynamicItem[discord.ui.Button], template=r"fac:(?P<fid>[0-9]+):(?P<act>[a-z]+)"):
@@ -288,8 +285,8 @@ def fac_view(f: dict) -> Optional[discord.ui.View]:
         return None
     view = discord.ui.View(timeout=None)
     view.add_item(FacButton(f["id"], "svc", "Обслужил", "⛽", discord.ButtonStyle.success))
-    view.add_item(FacButton(f["id"], "owner", "Ответственный", "👤"))
-    view.add_item(FacButton(f["id"], "remove", "Снять с учёта", "🗑️", discord.ButtonStyle.danger))
+    view.add_item(FacButton(f["id"], "owner", None, "👤"))
+    view.add_item(FacButton(f["id"], "remove", None, "🗑️"))
     return view
 
 
@@ -413,19 +410,22 @@ async def fac_tick(client: discord.Client) -> None:
 # ================= СБОРЫ НА ДОБЫЧУ =================
 
 def gat_embed(g: dict) -> discord.Embed:
-    state = {"open": "", "cancelled": " · ОТМЕНЁН", "done": " · ЗАВЕРШЁН"}[g["status"]]
+    state = {"open": "", "cancelled": " · отменён", "done": " · завершён"}[g["status"]]
     color = discord.Color.dark_green() if g["status"] == "open" else discord.Color.dark_grey()
-    e = discord.Embed(title=f"⛏️ СБОР НА ДОБЫЧУ №{g['id']}{state}", description=g["comment"] or None, color=color)
-    e.add_field(name="Что добываем", value=g["what"], inline=True)
+    lines = []
+    if g["comment"]:
+        lines += [g["comment"][:500], ""]
+    head = f"🕒 <t:{g['starts_at']}:f> · <t:{g['starts_at']}:R>"
     if g["place"]:
-        e.add_field(name="Где", value=g["place"], inline=True)
-    e.add_field(name="Когда", value=f"<t:{g['starts_at']}:f>\n<t:{g['starts_at']}:R>", inline=True)
-    e.add_field(name="Собирает", value=f"<@{g['author_id']}>", inline=True)
+        head += f"\n📍 {g['place']}"
+    head += f" · 🎺 <@{g['author_id']}>"
+    lines.append(head)
     going = db.gat_people(g["id"], "going")
     no = db.gat_people(g["id"], "no")
-    e.add_field(name=f"✅ Идут ({len(going)})", value=(" ".join(f"<@{u}>" for u in going) or "—")[:1024], inline=False)
-    e.add_field(name=f"❌ Не смогут ({len(no)})", value=(" ".join(f"<@{u}>" for u in no) or "—")[:1024], inline=False)
-    return e
+    lines.append(f"✅ **{len(going)}** " + " ".join(f"<@{u}>" for u in going)[:700])
+    if no:
+        lines.append(f"❌ **{len(no)}** " + " ".join(f"<@{u}>" for u in no)[:400])
+    return discord.Embed(title=f"⛏️ Добыча: {g['what']}{state}", description="\n".join(lines)[:4000], color=color)
 
 
 class GatButton(discord.ui.DynamicItem[discord.ui.Button], template=r"gat:(?P<gid>[0-9]+):(?P<act>[a-z]+)"):
@@ -464,7 +464,7 @@ def gat_view(g: dict) -> Optional[discord.ui.View]:
     view = discord.ui.View(timeout=None)
     view.add_item(GatButton(g["id"], "go", "Иду", "✅", discord.ButtonStyle.success))
     view.add_item(GatButton(g["id"], "no", "Не смогу", "❌"))
-    view.add_item(GatButton(g["id"], "cancel", "Отменить", "🚫", discord.ButtonStyle.danger))
+    view.add_item(GatButton(g["id"], "cancel", None, "🚫"))
     return view
 
 

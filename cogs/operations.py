@@ -196,37 +196,38 @@ def op_link(o: dict) -> str:
     return f"https://discord.com/channels/{config.GUILD_ID}/{o['channel_id']}/{o['message_id']}"
 
 
+def _mentions(ids: list[int], limit: int = 700) -> str:
+    text = " ".join(f"<@{u}>" for u in ids)
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0] + " …"
+    return text or "—"
+
+
 def op_embed(o: dict) -> discord.Embed:
     status = o["status"]
     color = {"open": discord.Color.dark_red(), "cancelled": discord.Color.dark_grey(),
              "done": discord.Color.dark_gold()}[status]
-    e = discord.Embed(
-        title=f"⚔️ ОПЕРАЦИЯ: {o['title']}{STATUS_TITLES[status]}",
-        description=o["task"] or None,
-        color=color,
-    )
-    e.add_field(name="Начало", value=f"<t:{o['starts_at']}:f>\n<t:{o['starts_at']}:R>", inline=True)
+    lines = []
+    if o["task"]:
+        lines.append(o["task"][:1500])
+        lines.append("")
+    head = f"🕒 <t:{o['starts_at']}:f> · <t:{o['starts_at']}:R>"
     if o["place"]:
-        e.add_field(name="Место", value=o["place"], inline=True)
-    e.add_field(name="Командует", value=f"<@{o['creator_id']}>", inline=True)
-
+        head += f"\n📍 {o['place']}"
+    head += f" · 🎺 <@{o['creator_id']}>"
+    lines.append(head)
     roster = db.roster(o["id"])
     for key, (emoji, _, plural, _) in ANSWERS.items():
-        people = roster.get(key, [])
-        value = " ".join(f"<@{u}>" for u in people) or "—"
-        if len(value) > 1024:
-            value = value[:1000].rsplit(" ", 1)[0] + " …"
-        e.add_field(name=f"{emoji} {plural} ({len(people)})", value=value, inline=False)
+        ids = roster.get(key, [])
+        if ids or key != "no":
+            lines.append(f"{emoji} **{len(ids)}** {_mentions(ids) if ids else ''}".rstrip())
     came = db.attended(o["id"])
     if came:
-        value = " ".join(f"<@{u}>" for u in came)
-        if len(value) > 1024:
-            value = value[:1000].rsplit(" ", 1)[0] + " …"
-        e.add_field(name=f"🎖️ Пришли ({len(came)})", value=value, inline=False)
+        lines.append(f"🎖️ Пришли **{len(came)}** {_mentions(came)}")
+    e = discord.Embed(title=f"⚔️ {o['title']}{STATUS_TITLES[status]}", description="\n".join(lines)[:4000],
+                      color=color)
     if o["image"]:
         e.set_image(url=o["image"])
-    if status == "open":
-        e.set_footer(text="Время показано в вашем часовом поясе. Ответ можно изменить.")
     return e
 
 
@@ -252,11 +253,12 @@ class OpButton(discord.ui.DynamicItem[discord.ui.Button], template=r"op:(?P<oid>
 
 
 def op_view(o: dict) -> discord.ui.View:
+    """Одна строка: три ответа и две маленькие служебные кнопки (📋 явка, 🚫 отмена)."""
     view = discord.ui.View(timeout=None)
     for key, (emoji, label, _, style) in ANSWERS.items():
         view.add_item(OpButton(o["id"], key, label, emoji, style, row=0))
-    view.add_item(OpButton(o["id"], "att", "Явка", "📋", discord.ButtonStyle.secondary, row=1))
-    view.add_item(OpButton(o["id"], "cancel", "Отменить операцию", "🚫", discord.ButtonStyle.danger, row=1))
+    view.add_item(OpButton(o["id"], "att", None, "📋", discord.ButtonStyle.secondary, row=0))
+    view.add_item(OpButton(o["id"], "cancel", None, "🚫", discord.ButtonStyle.secondary, row=0))
     return view
 
 

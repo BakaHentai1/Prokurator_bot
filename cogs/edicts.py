@@ -173,7 +173,7 @@ def edict_view(e: dict) -> Optional[discord.ui.View]:
         return None
     view = discord.ui.View(timeout=None)
     view.add_item(EdictButton(e["id"], "ack", "Принято", "✅", discord.ButtonStyle.success))
-    view.add_item(EdictButton(e["id"], "who", "Кто ознакомился", "👁️"))
+    view.add_item(EdictButton(e["id"], "who", None, "👁️"))
     return view
 
 

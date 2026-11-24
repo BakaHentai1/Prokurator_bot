@@ -548,21 +548,9 @@ class ConsulatePanel(discord.ui.View):
 
 def panel_embed() -> discord.Embed:
     return discord.Embed(
-        title="🏛️ КОНСУЛАТ ЛЕГИОНА",
-        description=(
-            "Панель командования.\n\n"
-            "📜 **Новый эдикт** — официальное объявление с номером и подписью, можно по расписанию "
-            "и с кнопкой «Принято».\n"
-            "🗳️ **Новое голосование** — вопрос, варианты, срок; тайное или открытое. "
-            "Итоги бот опубликует сам.\n"
-            "🏛️ **Выборы** — выдвижение кандидатов, тайное голосование, итоги и выдача роли "
-            "после утверждения Принцепсом.\n"
-            "⚔️ **Новая операция** — время, место, задача; кнопки «Приду / Опоздаю / Не приду», "
-            "напоминание участникам за 30 минут в чате Легиона.\n"
-            "📋 **Текущие голосования** — список с числом проголосовавших и временем до конца.\n\n"
-            "Журнал Консулата ведётся в «Архивариуме».\n\n"
-            "*Senatus Populusque Legionis*"
-        ),
+        title="🏛️ КОНСУЛАТ",
+        description="Операции, голосования, эдикты и выборы — в меню ниже.\n"
+                    "Создают: Принцепс, Консулы, Сенат (операции — и Легаты).",
         color=discord.Color.dark_red(),
     )
 
@@ -598,7 +586,8 @@ class Consulate(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            message = await interaction.channel.send(embed=panel_embed(), view=ConsulatePanel())
+            from cogs.compact import consulate_panel
+            message = await interaction.channel.send(embed=panel_embed(), view=consulate_panel()())
         except discord.HTTPException as e:
             await interaction.followup.send(f"Не удалось опубликовать панель: {e.text or e}", ephemeral=True)
             return
