@@ -16,7 +16,7 @@ import logging
 import random
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -529,26 +529,105 @@ def t_view(t: dict) -> Optional[discord.ui.View]:
     return view
 
 
-class TournamentForm(discord.ui.Modal, title="Турнир гладиаторов"):
-    name = discord.ui.TextInput(label="Название", max_length=60, default="Игры в честь Легиона")
-    when = discord.ui.TextInput(label="Старт", max_length=30, placeholder="21:00 · 30.11 20:00 · через 1ч")
+WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+
+class TournamentNameModal(discord.ui.Modal, title="Название турнира"):
+    def __init__(self, setup: "TournamentSetupView") -> None:
+        super().__init__()
+        self.setup = setup
+        self.name = discord.ui.TextInput(label="Название", max_length=60, default=setup.name)
+        self.add_item(self.name)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        from cogs.operations import parse_start
+        self.setup.name = self.name.value.strip() or self.setup.name
+        await interaction.response.edit_message(content=self.setup.summary(), view=self.setup)
+
+
+class TournamentSetupView(discord.ui.View):
+    """Турнир: день и время выбираются из меню — ничего не нужно печатать."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=900)
+        from cogs.operations import local_tz, tz_name
+        self.tz = local_tz()
+        self.name = "Игры в честь Легиона"
+        self.day = 0          # смещение в днях от сегодня
+        self.time: Optional[str] = None   # "HH:MM" или "+15" / "+60"
+        self.done = False
+        today = datetime.now(self.tz)
+        days = []
+        for i in range(7):
+            d = today + timedelta(days=i)
+            label = {0: "Сегодня", 1: "Завтра"}.get(i, f"{WEEKDAYS[d.weekday()]} {d:%d.%m}")
+            if i in (0, 1):
+                label += f" ({WEEKDAYS[d.weekday()]} {d:%d.%m})"
+            days.append(discord.SelectOption(label=label, value=str(i), default=i == 0))
+        self.day_select.options = days
+        times = [discord.SelectOption(label="Через 15 минут", value="+15", emoji="⚡"),
+                 discord.SelectOption(label="Через 1 час", value="+60", emoji="⏱️")]
+        for h in range(12, 24):
+            times.append(discord.SelectOption(label=f"{h}:00", value=f"{h:02d}:00"))
+            if h in (19, 20, 21, 22):
+                times.append(discord.SelectOption(label=f"{h}:30", value=f"{h:02d}:30"))
+        self.time_select.options = times[:25]
+        self.time_select.placeholder = f"Время ({tz_name()})"
+
+    def starts_at(self) -> Optional[int]:
+        if not self.time:
+            return None
+        now = datetime.now(self.tz)
+        if self.time.startswith("+"):
+            return int(now.timestamp()) + int(self.time[1:]) * 60
+        h, m = map(int, self.time.split(":"))
+        start = (now + timedelta(days=self.day)).replace(hour=h, minute=m, second=0, microsecond=0)
+        return int(start.timestamp())
+
+    def summary(self) -> str:
+        ts = self.starts_at()
+        when = f"<t:{ts}:F> (<t:{ts}:R>)" if ts else "выберите время"
+        warn = "\n⚠️ Это время уже прошло — выберите другое." if ts and ts <= time.time() else ""
+        return (f"🦁 **{self.name}**\nСтарт: {when}{warn}\n\n"
+                "Выберите день и время, при желании смените название, и нажмите «Объявить».")
+
+    @discord.ui.select(placeholder="День", options=[discord.SelectOption(label="—")], row=0)
+    async def day_select(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
+        self.day = int(select.values[0])
+        for o in select.options:
+            o.default = o.value == select.values[0]
+        await interaction.response.edit_message(content=self.summary(), view=self)
+
+    @discord.ui.select(placeholder="Время", options=[discord.SelectOption(label="—")], row=1)
+    async def time_select(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
+        self.time = select.values[0]
+        for o in select.options:
+            o.default = o.value == select.values[0]
+        await interaction.response.edit_message(content=self.summary(), view=self)
+
+    @discord.ui.button(label="Название", emoji="✏️", style=discord.ButtonStyle.secondary, row=2)
+    async def rename(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(TournamentNameModal(self))
+
+    @discord.ui.button(label="Объявить", emoji="🦁", style=discord.ButtonStyle.success, row=2)
+    async def publish(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if self.done:
+            return
         if not can_create(interaction.user):
             await say(interaction, "⛔ Турниры объявляют Принцепс, Консулы и Сенат.")
             return
-        starts = parse_start(self.when.value)
-        if starts is None:
-            await say(interaction, "Не понял время. Примеры: `21:00`, `30.11 20:00`, `через 1ч`.")
+        starts = self.starts_at()
+        if not starts or starts <= time.time():
+            await say(interaction, "Сначала выберите день и время в будущем.")
             return
+        self.done = True
+        self.stop()
         channel = colosseum_channel(interaction.client) or interaction.channel
         tid = db.x("INSERT INTO tournaments (name, channel_id, starts_at, author_id) VALUES (?, ?, ?, ?)",
-                   (self.name.value.strip(), channel.id, starts, interaction.user.id))
+                   (self.name, channel.id, starts, interaction.user.id))
         t = db.q("SELECT * FROM tournaments WHERE id = ?", (tid,))[0]
         msg = await channel.send(embed=t_embed(t), view=t_view(t))
         db.x("UPDATE tournaments SET message_id = ? WHERE id = ?", (msg.id, tid))
-        await say(interaction, f"🦁 Турнир объявлен: {msg.jump_url}")
+        await interaction.response.edit_message(content=f"🦁 Турнир объявлен: {msg.jump_url}", view=None)
 
 
 async def refresh_t(client: discord.Client, tid: int) -> None:
@@ -824,7 +903,11 @@ class ColosseumPanel(discord.ui.View):
             if not can_create(interaction.user):
                 await say(interaction, "⛔ Это для Принцепса, Консулов и Сената.")
                 return
-            await interaction.response.send_modal(TournamentForm() if choice == "tournament" else QuizAddModal())
+            if choice == "tournament":
+                view = TournamentSetupView()
+                await say(interaction, view.summary(), view=view)
+            else:
+                await interaction.response.send_modal(QuizAddModal())
 
 
 def panel_embed() -> discord.Embed:
