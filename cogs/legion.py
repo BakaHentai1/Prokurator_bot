@@ -525,6 +525,31 @@ def my_jobs(user_id: int) -> list[dict]:
                 "WHERE t.user_id = ? AND t.status = 'taken' ORDER BY j.id", (user_id,))
 
 
+def my_events(user_id: int) -> list[str]:
+    """Сборы и операции, на которые человек записался (ещё не прошедшие)."""
+    now = int(time.time())
+    lines = []
+    try:
+        from cogs import operations
+        if operations.db is not None:
+            for o in operations.db.open_ops():
+                r = operations.db.roster(o["id"])
+                if o["starts_at"] > now - 3 * 3600 and (user_id in r.get("going", []) or user_id in r.get("late", [])):
+                    lines.append(f"⚔️ [{o['title']}]({link(o['channel_id'], o['message_id'])}) — <t:{o['starts_at']}:R>")
+    except Exception:
+        log.exception("Мои задания: операции")
+    try:
+        from cogs import industry
+        if industry.db is not None:
+            for g in industry.db.gat_open():
+                if g["starts_at"] > now - 3 * 3600 and user_id in industry.db.gat_people(g["id"], "going"):
+                    lines.append(f"⛏️ [Сбор: {g['what']}]({link(g['channel_id'], g['message_id'])}) — "
+                                 f"<t:{g['starts_at']}:R>")
+    except Exception:
+        log.exception("Мои задания: сборы")
+    return lines
+
+
 def jobs_done(user_id: int) -> int:
     return db.q("SELECT COUNT(*) AS n FROM job_takers WHERE user_id = ? AND status = 'done'", (user_id,))[0]["n"]
 
@@ -1034,8 +1059,13 @@ class LegionPanel(discord.ui.View):
             await say(interaction, embed=path_embed(user))
         elif choice == "myjobs":
             jobs = my_jobs(user.id)
-            text = ("📋 Ваши задания — выберите выполненное:" if jobs
-                    else "📋 Заданий нет. Возьмите через «🎯 Получить задание».")
+            events = my_events(user.id)
+            parts = []
+            if events:
+                parts.append("📅 **Ты записан:**\n" + "\n".join(events))
+            if jobs:
+                parts.append("📋 **Взятые задания** — выберите выполненное:")
+            text = "\n\n".join(parts) or "📋 Заданий нет. Возьмите через «🎯 Получить задание»."
             if jobs:
                 await say(interaction, text, view=MyJobsView(jobs))
             else:
