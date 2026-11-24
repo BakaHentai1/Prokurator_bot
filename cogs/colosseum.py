@@ -781,6 +781,15 @@ async def maybe_next_round(client: discord.Client, tid: int) -> None:
     await start_round(client, tid, winners)
 
 
+def roman(n: int) -> str:
+    out = ""
+    for v, r in ((10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")):
+        while n >= v:
+            out += r
+            n -= v
+    return out
+
+
 async def finish_tournament(client: discord.Client, tid: int, winner_id: int) -> None:
     db.x("UPDATE tournaments SET status = 'done', winner_id = ? WHERE id = ?", (winner_id, tid))
     t = db.q("SELECT * FROM tournaments WHERE id = ?", (tid,))[0]
@@ -807,14 +816,17 @@ async def finish_tournament(client: discord.Client, tid: int, winner_id: int) ->
         fights = []
         for m in db.q("SELECT * FROM t_matches WHERE tournament_id = ? AND round = ? ORDER BY id", (tid, r)):
             if m["b_id"] is None:
-                fights.append(f"🍀 <@{m['a_id']}> без боя")
+                fights.append(f"🍀 <@{m['a_id']}> — милостью Фортуны прошёл без боя")
             else:
                 loser = m["b_id"] if m["winner_id"] == m["a_id"] else m["a_id"]
-                fights.append(f"<@{m['winner_id']}> 🗡️ ~~<@{loser}>~~")
-        name = "Финал" if r == t["round"] else f"Раунд {r}"
-        rounds.append(f"**{name}:** " + " · ".join(fights))
-    text = (f"👑 **{t['name']} завершён!** Победитель — <@{winner_id}>, новый **{CHAMPION_ROLE}**! "
-            f"Толпа бросает розы на арену! 🌹{note}\n\n" + "\n".join(rounds))
+                fights.append(f"⚔️ <@{m['winner_id']}> поверг <@{loser}>")
+        name = "Последний бой" if r == t["round"] else f"Круг {roman(r)}"
+        rounds.append(f"**{name}**\n" + "\n".join(fights))
+    text = (f"🏛️ **Игры «{t['name']}» окончены!**\n"
+            f"Песок арены остыл. Венец победителя по праву достаётся <@{winner_id}> — "
+            f"отныне он **{CHAMPION_ROLE}**! 🌿{note}\n\n"
+            "📜 **Летопись арены**\n" + "\n\n".join(rounds) +
+            "\n\n*Ave, victor! Толпа бросает розы на песок.* 🌹")
     final = await channel.send(text[:2000], allowed_mentions=discord.AllowedMentions(users=[discord.Object(winner_id)]))
     asyncio.create_task(cleanup_tournament(client, tid, final.id))
 
