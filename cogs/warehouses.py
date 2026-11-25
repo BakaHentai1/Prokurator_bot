@@ -13,6 +13,7 @@
    последнего обновления (кнопка «Обновил») и напоминает за 12 ч и за 1 ч:
    обычные склады — в «Секретариум», личные — владельцу в личку.
 """
+import asyncio
 import logging
 import sqlite3
 import time
@@ -69,6 +70,7 @@ AUDIT_LABELS = {
     "reopen": "вернул склад из архива",
     "refresh": "отметил обновление склада",
     "war_reset": "закрыл склад при сбросе складов",
+    "delete": "удалил склад",
 }
 
 
@@ -385,11 +387,14 @@ MENU_OPEN = [
     ("setpw", "Сменить пароль", "🔄"),
     ("status", "Статус / категория", "📊"),
     ("log", "Журнал", "📜"),
+    ("delete", "Удалить склад", "🗑️"),
 ]
 MENU_CLOSED = [
     ("status", "Статус / категория", "📊"),
     ("log", "Журнал", "📜"),
+    ("delete", "Удалить склад", "🗑️"),
 ]
+MENU_VERSION = "2"  # меняется, когда в меню карточки добавляются пункты — старые карточки обновятся при запуске
 
 
 class CardButton(discord.ui.DynamicItem[discord.ui.Button], template=r"wh:(?P<action>[a-z]+):(?P<wid>[0-9]+)"):
@@ -923,6 +928,58 @@ async def on_card_button(interaction: discord.Interaction, action: str, wid: int
             return
         await interaction.response.send_message(embed=history_embed(wh), ephemeral=True)
 
+    elif action == "delete":
+        if not can_delete(member, wh):
+            await deny(interaction, "⛔ Удалить склад могут его владелец, Консулы и Принцепс.")
+            return
+        await interaction.response.send_modal(DeleteModal(wh["id"], wh["name"]))
+
+
+def can_delete(member: discord.abc.User, wh: dict) -> bool:
+    """Владелец склада, Консулы, Принцепс (и владелец сервера)."""
+    return (is_owner(member, wh) or can_reset(member)
+            or (bool(config.CONSUL_ROLE_ID) and any(r.id == config.CONSUL_ROLE_ID
+                                                    for r in getattr(member, "roles", []))))
+
+
+class DeleteModal(discord.ui.Modal):
+    confirm = discord.ui.TextInput(label="Для подтверждения напишите: УДАЛИТЬ", max_length=10)
+
+    def __init__(self, wid: int, name: str) -> None:
+        super().__init__(title=f"🗑️ Удалить склад «{name}»"[:45])
+        self.wid = wid
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        wh = db.get(self.wid)
+        if wh is None:
+            await deny(interaction, "Склад уже удалён.")
+            return
+        if not can_delete(interaction.user, wh):
+            await deny(interaction)
+            return
+        if self.confirm.value.strip().upper() != "УДАЛИТЬ":
+            await interaction.response.send_message("Удаление отменено: подтверждение не совпало.", ephemeral=True)
+            return
+        await interaction.response.send_message(f"🗑️ Склад №{wh['id']} «{wh['name']}» удалён из списка.",
+                                                ephemeral=True)
+        await delete_warehouse(interaction.client, interaction.user, wh)
+
+
+async def delete_warehouse(client: discord.Client, user: discord.abc.User, wh: dict) -> None:
+    owner = f"владелец <@{wh['owner_id']}>"
+    await audit(client, user, wh, "delete", f"{owner}; место: {wh['region']}" + (f" / {wh['coords']}" if wh['coords'] else ""))
+    await clear_reminders(client, wh["id"])
+    if wh["message_id"] and wh["channel_id"]:
+        channel = client.get_channel(wh["channel_id"])
+        if channel is not None:
+            try:
+                await channel.get_partial_message(wh["message_id"]).delete()
+            except discord.HTTPException:
+                pass
+    db.conn.execute("DELETE FROM reminder_msgs WHERE warehouse_id = ?", (wh["id"],))
+    db.conn.execute("DELETE FROM warehouses WHERE id = ?", (wh["id"],))
+    db.conn.commit()
+
 
 # ---------- напоминания об обновлении ----------
 
@@ -1231,6 +1288,26 @@ class Warehouses(commands.Cog):
 
     async def cog_load(self) -> None:
         self.reminders.start()
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        """Один раз после обновления меню: старые карточки получают новые пункты «⋯ Ещё»."""
+        row = db.conn.execute("SELECT value FROM meta WHERE key = 'menu_version'").fetchone()
+        if row and row[0] == MENU_VERSION:
+            return
+        db.conn.execute("INSERT OR REPLACE INTO meta VALUES ('menu_version', ?)", (MENU_VERSION,))
+        db.conn.commit()
+        for wh in db.all():
+            if not (wh["message_id"] and wh["channel_id"]):
+                continue
+            channel = self.bot.get_channel(wh["channel_id"])
+            if channel is None:
+                continue
+            try:
+                await channel.get_partial_message(wh["message_id"]).edit(view=card_view(wh))
+            except discord.HTTPException:
+                pass
+            await asyncio.sleep(1)
 
     async def cog_unload(self) -> None:
         self.reminders.cancel()
