@@ -8,7 +8,7 @@
 
 Титулы по победам: Тирон → Гладиатор → Ветеран арены → Примус палус → Легенда Колизея.
 Турниры: объявляют Принцепс, Консулы, Сенат; победитель получает роль «Чемпион Арены».
-Вопрос дня: каждый день в 18:00 (TZ_OFFSET), первый верный ответ — 3 очка, остальные — 1.
+Вопрос дня: по команде /вопрос_дня (сам не публикуется), через сутки удаляется; первый верный ответ — 3 очка, остальные — 1.
 /колизей — закреплённая панель. Данные — в отдельном файле data/colosseum.db.
 """
 import asyncio
@@ -908,19 +908,25 @@ def quiz_view(p: dict) -> discord.ui.View:
     return view
 
 
+async def drop_quizzes(client: discord.Client, older_than: int = 0) -> None:
+    """Закрывает и удаляет из канала прошлые вопросы (очки знатоков сохраняются)."""
+    border = int(time.time()) - older_than
+    for old in db.q("SELECT * FROM quiz_posts WHERE message_id IS NOT NULL AND posted_at <= ?", (border,)):
+        db.x("UPDATE quiz_posts SET status = 'closed', message_id = NULL WHERE id = ?", (old["id"],))
+        ch = client.get_channel(old["channel_id"])
+        if ch:
+            try:
+                await ch.get_partial_message(old["message_id"]).delete()
+            except discord.HTTPException:
+                pass
+            await asyncio.sleep(0.5)
+
+
 async def post_quiz(client: discord.Client) -> Optional[str]:
     channel = colosseum_channel(client)
     if channel is None:
         return "Канал Колизея не известен — опубликуйте панель командой /колизей."
-    for old in db.q("SELECT * FROM quiz_posts WHERE status = 'open'"):
-        db.x("UPDATE quiz_posts SET status = 'closed' WHERE id = ?", (old["id"],))
-        old["status"] = "closed"
-        try:
-            ch = client.get_channel(old["channel_id"])
-            if ch:
-                await ch.get_partial_message(old["message_id"]).edit(embed=quiz_embed(old, closed=True), view=None)
-        except discord.HTTPException:
-            pass
+    await drop_quizzes(client)
     key, question, correct, wrong = pick_question()
     options = wrong[:3] + [correct]
     random.shuffle(options)
@@ -1005,7 +1011,7 @@ def panel_embed() -> discord.Embed:
     return discord.Embed(
         title="🏟️ КОЛИЗЕЙ",
         description="⚔️ Дуэль — бой в закрытой ветке, итог появится здесь.\n"
-                    "🧠 Вопрос дня — каждый день в 18:00. 🦁 Турниры и 🏆 Арена — в меню.",
+                    "🧠 Вопрос дня — по команде /вопрос_дня. 🦁 Турниры и 🏆 Арена — в меню.",
         color=discord.Color.dark_red(),
     )
 
@@ -1038,12 +1044,13 @@ class Colosseum(commands.Cog):
                 await start_round(self.bot, t["id"], players)
             except Exception:
                 log.exception("Старт турнира %s", t["id"])
-        # вопрос дня
+        # вопрос дня: сам больше не публикуется (только /вопрос_дня); старые вопросы убираются через сутки
         try:
+            await drop_quizzes(self.bot, older_than=24 * 3600)
             from cogs.operations import local_tz
             local = datetime.now(local_tz())
             today = local.strftime("%Y-%m-%d")
-            if db.meta("quiz_on") != "0" and local.hour >= QUIZ_HOUR and db.meta("quiz_day") != today \
+            if db.meta("quiz_on") == "1" and local.hour >= QUIZ_HOUR and db.meta("quiz_day") != today \
                     and colosseum_channel(self.bot):
                 db.set_meta("quiz_day", today)
                 await post_quiz(self.bot)
@@ -1073,7 +1080,7 @@ class Colosseum(commands.Cog):
             note = "и закреплена"
         except discord.HTTPException:
             note = "но закрепить не вышло — закрепите вручную"
-        await interaction.followup.send(f"✅ Панель опубликована {note}. Вопрос дня — каждый день в {QUIZ_HOUR}:00.",
+        await interaction.followup.send(f"✅ Панель опубликована {note}. Вопрос дня — командой /вопрос_дня.",
                                         ephemeral=True)
 
     @app_commands.command(name="вопрос_дня", description="Опубликовать вопрос дня сейчас (командование)")
